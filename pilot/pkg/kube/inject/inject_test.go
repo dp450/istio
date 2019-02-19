@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/gogo/protobuf/types"
+
 	meshconfig "istio.io/api/mesh/v1alpha1"
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pilot/test/util"
@@ -75,6 +76,7 @@ func TestIntoResourceFile(t *testing.T) {
 		excludeIPRanges              string
 		includeInboundPorts          string
 		excludeInboundPorts          string
+		kubevirtInterfaces           string
 		statusPort                   int
 		readinessPath                string
 		readinessInitialDelaySeconds uint32
@@ -126,16 +128,6 @@ func TestIntoResourceFile(t *testing.T) {
 			want:      "hello-tproxy-debug.yaml.injected",
 			debugMode: true,
 			tproxy:    true,
-		},
-		{
-			in:                           "hello-probes.yaml",
-			want:                         "hello-probes.yaml.injected",
-			includeIPRanges:              DefaultIncludeIPRanges,
-			includeInboundPorts:          DefaultIncludeInboundPorts,
-			statusPort:                   DefaultStatusPort,
-			readinessInitialDelaySeconds: DefaultReadinessInitialDelaySeconds,
-			readinessPeriodSeconds:       DefaultReadinessPeriodSeconds,
-			readinessFailureThreshold:    DefaultReadinessFailureThreshold,
 		},
 		{
 			in:                           "hello.yaml",
@@ -386,7 +378,7 @@ func TestIntoResourceFile(t *testing.T) {
 		{
 			in:                           "format-duration.yaml",
 			want:                         "format-duration.yaml.injected",
-			duration:                     time.Duration(42 * time.Second),
+			duration:                     42 * time.Second,
 			includeIPRanges:              DefaultIncludeIPRanges,
 			includeInboundPorts:          DefaultIncludeInboundPorts,
 			statusPort:                   DefaultStatusPort,
@@ -410,6 +402,7 @@ func TestIntoResourceFile(t *testing.T) {
 			want:                         "traffic-params-empty-includes.yaml.injected",
 			includeIPRanges:              "",
 			excludeIPRanges:              "",
+			kubevirtInterfaces:           "",
 			statusPort:                   DefaultStatusPort,
 			readinessInitialDelaySeconds: DefaultReadinessInitialDelaySeconds,
 			readinessPeriodSeconds:       DefaultReadinessPeriodSeconds,
@@ -455,6 +448,7 @@ func TestIntoResourceFile(t *testing.T) {
 			want:                         "status_params.yaml.injected",
 			includeIPRanges:              DefaultIncludeIPRanges,
 			includeInboundPorts:          DefaultIncludeInboundPorts,
+			kubevirtInterfaces:           DefaultkubevirtInterfaces,
 			statusPort:                   123,
 			readinessInitialDelaySeconds: 100,
 			readinessPeriodSeconds:       200,
@@ -466,6 +460,32 @@ func TestIntoResourceFile(t *testing.T) {
 			want:                         "status_annotations.yaml.injected",
 			includeIPRanges:              DefaultIncludeIPRanges,
 			includeInboundPorts:          DefaultIncludeInboundPorts,
+			statusPort:                   DefaultStatusPort,
+			readinessInitialDelaySeconds: DefaultReadinessInitialDelaySeconds,
+			readinessPeriodSeconds:       DefaultReadinessPeriodSeconds,
+			readinessFailureThreshold:    DefaultReadinessFailureThreshold,
+		},
+		{
+			// Verifies that the kubevirtInterfaces list are applied properly from parameters..
+			in:                           "kubevirtInterfaces.yaml",
+			want:                         "kubevirtInterfaces.yaml.injected",
+			debugMode:                    true,
+			includeIPRanges:              DefaultIncludeIPRanges,
+			includeInboundPorts:          DefaultIncludeInboundPorts,
+			kubevirtInterfaces:           "net1",
+			statusPort:                   DefaultStatusPort,
+			readinessInitialDelaySeconds: DefaultReadinessInitialDelaySeconds,
+			readinessPeriodSeconds:       DefaultReadinessPeriodSeconds,
+			readinessFailureThreshold:    DefaultReadinessFailureThreshold,
+		},
+		{
+			// Verifies that the kubevirtInterfaces list are applied properly from parameters..
+			in:                           "kubevirtInterfaces_list.yaml",
+			want:                         "kubevirtInterfaces_list.yaml.injected",
+			debugMode:                    true,
+			includeIPRanges:              DefaultIncludeIPRanges,
+			includeInboundPorts:          DefaultIncludeInboundPorts,
+			kubevirtInterfaces:           "net1,net2",
 			statusPort:                   DefaultStatusPort,
 			readinessInitialDelaySeconds: DefaultReadinessInitialDelaySeconds,
 			readinessPeriodSeconds:       DefaultReadinessPeriodSeconds,
@@ -493,6 +513,7 @@ func TestIntoResourceFile(t *testing.T) {
 				ProxyImage:                   ProxyImageName(unitTestHub, unitTestTag, c.debugMode),
 				ImagePullPolicy:              "IfNotPresent",
 				SDSEnabled:                   false,
+				EnableSdsTokenMount:          false,
 				Verbosity:                    DefaultVerbosity,
 				SidecarProxyUID:              DefaultSidecarProxyUID,
 				Version:                      "12345678",
@@ -504,10 +525,12 @@ func TestIntoResourceFile(t *testing.T) {
 				ExcludeIPRanges:              c.excludeIPRanges,
 				IncludeInboundPorts:          c.includeInboundPorts,
 				ExcludeInboundPorts:          c.excludeInboundPorts,
+				KubevirtInterfaces:           c.kubevirtInterfaces,
 				StatusPort:                   c.statusPort,
 				ReadinessInitialDelaySeconds: c.readinessInitialDelaySeconds,
 				ReadinessPeriodSeconds:       c.readinessPeriodSeconds,
 				ReadinessFailureThreshold:    c.readinessFailureThreshold,
+				RewriteAppHTTPProbe:          false,
 			}
 			if c.imagePullPolicy != "" {
 				params.ImagePullPolicy = c.imagePullPolicy
@@ -518,6 +541,89 @@ func TestIntoResourceFile(t *testing.T) {
 			}
 			inputFilePath := "testdata/inject/" + c.in
 			wantFilePath := "testdata/inject/" + c.want
+			in, err := os.Open(inputFilePath)
+			if err != nil {
+				t.Fatalf("Failed to open %q: %v", inputFilePath, err)
+			}
+			defer func() { _ = in.Close() }()
+			var got bytes.Buffer
+			if err = IntoResourceFile(sidecarTemplate, &mesh, in, &got); err != nil {
+				t.Fatalf("IntoResourceFile(%v) returned an error: %v", inputFilePath, err)
+			}
+
+			// The version string is a maintenance pain for this test. Strip the version string before comparing.
+			gotBytes := got.Bytes()
+			wantedBytes := util.ReadGoldenFile(gotBytes, wantFilePath, t)
+
+			wantBytes := stripVersion(wantedBytes)
+			gotBytes = stripVersion(gotBytes)
+
+			util.CompareBytes(gotBytes, wantBytes, wantFilePath, t)
+
+			if util.Refresh() {
+				util.RefreshGoldenFile(gotBytes, wantFilePath, t)
+			}
+		})
+	}
+}
+
+// TestRewriteAppProbe tests the feature for pilot agent to take over app health check traffic.
+func TestRewriteAppProbe(t *testing.T) {
+	cases := []struct {
+		in       string
+		want     string
+		template string
+	}{
+		{
+			in:   "hello-probes.yaml",
+			want: "hello-probes.yaml.injected",
+		},
+		{
+			in:   "hello-readiness.yaml",
+			want: "hello-readiness.yaml.injected",
+		},
+		{
+			in:   "named_port.yaml",
+			want: "named_port.yaml.injected",
+		},
+		{
+			in:   "one_container.yaml",
+			want: "one_container.yaml.injected",
+		},
+		{
+			in:   "two_container.yaml",
+			want: "two_container.yaml.injected",
+		},
+		{
+			in:   "ready_only.yaml",
+			want: "ready_only.yaml.injected",
+		},
+		// TODO(incfly): add more test case covering different -statusPort=123, --statusPort=123
+		// No statusport, --statusPort 123.
+	}
+
+	for i, c := range cases {
+		testName := fmt.Sprintf("[%02d] %s", i, c.want)
+		t.Run(testName, func(t *testing.T) {
+			mesh := model.DefaultMeshConfig()
+			params := &Params{
+				InitImage:                    InitImageName(unitTestHub, unitTestTag, false),
+				ProxyImage:                   ProxyImageName(unitTestHub, unitTestTag, false),
+				ImagePullPolicy:              "IfNotPresent",
+				SidecarProxyUID:              DefaultSidecarProxyUID,
+				Version:                      "12345678",
+				StatusPort:                   DefaultStatusPort,
+				ReadinessInitialDelaySeconds: DefaultReadinessPeriodSeconds,
+				ReadinessPeriodSeconds:       DefaultReadinessFailureThreshold,
+				ReadinessFailureThreshold:    DefaultReadinessFailureThreshold,
+				RewriteAppHTTPProbe:          true,
+			}
+			sidecarTemplate, err := GenerateTemplateFromParams(params)
+			if err != nil {
+				t.Fatalf("GenerateTemplateFromParams(%v) failed: %v", params, err)
+			}
+			inputFilePath := "testdata/inject/app_probe/" + c.in
+			wantFilePath := "testdata/inject/app_probe/" + c.want
 			in, err := os.Open(inputFilePath)
 			if err != nil {
 				t.Fatalf("Failed to open %q: %v", inputFilePath, err)

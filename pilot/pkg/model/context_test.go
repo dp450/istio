@@ -26,20 +26,33 @@ import (
 
 func TestServiceNode(t *testing.T) {
 	nodes := []struct {
-		in  model.Proxy
+		in  *model.Proxy
 		out string
 	}{
 		{
-			in:  memory.HelloProxyV0,
+			in:  &memory.HelloProxyV0,
 			out: "sidecar~10.1.1.0~v0.default~default.svc.cluster.local",
 		},
 		{
-			in: model.Proxy{
-				Type:   model.Ingress,
-				ID:     "random",
-				Domain: "local",
+			in: &model.Proxy{
+				Type:        model.Ingress,
+				ID:          "random",
+				IPAddresses: []string{"10.3.3.3"},
+				DNSDomains:  []string{"local"},
 			},
-			out: "ingress~~random~local",
+			out: "ingress~10.3.3.3~random~local",
+		},
+		{
+			in: &model.Proxy{
+				Type:        model.SidecarProxy,
+				ID:          "random",
+				IPAddresses: []string{"10.3.3.3", "10.4.4.4", "10.5.5.5", "10.6.6.6"},
+				DNSDomains:  []string{"local"},
+				Metadata: map[string]string{
+					"INSTANCE_IPS": "10.3.3.3,10.4.4.4,10.5.5.5,10.6.6.6",
+				},
+			},
+			out: "sidecar~10.3.3.3~random~local",
 		},
 	}
 
@@ -48,12 +61,35 @@ func TestServiceNode(t *testing.T) {
 		if out != node.out {
 			t.Errorf("%#v.ServiceNode() => Got %s, want %s", node.in, out, node.out)
 		}
-		in, err := model.ParseServiceNode(node.out)
+		in, err := model.ParseServiceNodeWithMetadata(node.out, node.in.Metadata)
+
 		if err != nil {
 			t.Errorf("ParseServiceNode(%q) => Got error %v", node.out, err)
 		}
 		if !reflect.DeepEqual(in, node.in) {
 			t.Errorf("ParseServiceNode(%q) => Got %#v, want %#v", node.out, in, node.in)
+		}
+	}
+}
+
+func TestGetUniqueSuffixes(t *testing.T) {
+	data := []struct {
+		in  []string
+		out []string
+	}{
+		{
+			in:  []string{"part1.part2.com", "part2.com", "default.svc.local", "kube.default.svc.local"},
+			out: []string{"part1.part2.com", "kube.default.svc.local"},
+		},
+		{
+			in:  []string{"global", "istio-system.global", "global"},
+			out: []string{"istio-system.global"},
+		},
+	}
+	for _, datum := range data {
+		out := model.GetUniqueSuffixes(datum.in)
+		if !reflect.DeepEqual(datum.out, out) {
+			t.Errorf("GetSuperString() =>\n Got %s\nwant %s", out, datum.out)
 		}
 	}
 }

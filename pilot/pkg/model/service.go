@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/envoyproxy/go-control-plane/envoy/api/v2/endpoint"
@@ -55,6 +56,8 @@ type Service struct {
 	// Address specifies the service IPv4 address of the load balancer
 	Address string `json:"address,omitempty"`
 
+	// Protect concurrent ClusterVIPs read/write
+	Mutex sync.RWMutex
 	// ClusterVIPs specifies the service address of the load balancer
 	// in each of the clusters where the service resides
 	ClusterVIPs map[string]string `json:"cluster-vips,omitempty"`
@@ -105,6 +108,10 @@ const (
 
 	// IstioDefaultConfigNamespace constant for default namespace
 	IstioDefaultConfigNamespace = "default"
+
+	// LocalityLabel indicates the region/zone/subzone of an instance. It is used if the native
+	// registry doesn't provide one.
+	LocalityLabel = "istio-locality"
 )
 
 // Port represents a network port where a service is listening for
@@ -131,14 +138,16 @@ type PortList []*Port
 type Protocol string
 
 const (
-	// ProtocolGRPC declares that the port carries gRPC traffic
+	// ProtocolGRPC declares that the port carries gRPC traffic.
 	ProtocolGRPC Protocol = "GRPC"
+	// ProtocolGRPCWeb declares that the port carries gRPC traffic.
+	ProtocolGRPCWeb Protocol = "GRPC-Web"
 	// ProtocolHTTP declares that the port carries HTTP/1.1 traffic.
 	// Note that HTTP/1.0 or earlier may not be supported by the proxy.
 	ProtocolHTTP Protocol = "HTTP"
-	// ProtocolHTTP2 declares that the port carries HTTP/2 traffic
+	// ProtocolHTTP2 declares that the port carries HTTP/2 traffic.
 	ProtocolHTTP2 Protocol = "HTTP2"
-	// ProtocolHTTPS declares that the port carries HTTPS traffic
+	// ProtocolHTTPS declares that the port carries HTTPS traffic.
 	ProtocolHTTPS Protocol = "HTTPS"
 	// ProtocolTCP declares the the port uses TCP.
 	// This is the default protocol for a service port.
@@ -149,11 +158,13 @@ const (
 	// ProtocolUDP declares that the port uses UDP.
 	// Note that UDP protocol is not currently supported by the proxy.
 	ProtocolUDP Protocol = "UDP"
-	// ProtocolMongo declares that the port carries mongoDB traffic
+	// ProtocolMongo declares that the port carries MongoDB traffic.
 	ProtocolMongo Protocol = "Mongo"
-	// ProtocolRedis declares that the port carries redis traffic
+	// ProtocolRedis declares that the port carries Redis traffic.
 	ProtocolRedis Protocol = "Redis"
-	// ProtocolUnsupported - value to signify that the protocol is unsupported
+	// ProtocolMySQL declares that the port carries MySQL traffic.
+	ProtocolMySQL Protocol = "MySQL"
+	// ProtocolUnsupported - value to signify that the protocol is unsupported.
 	ProtocolUnsupported Protocol = "UnsupportedProtocol"
 )
 
@@ -190,6 +201,18 @@ const (
 	TrafficDirectionOutbound TrafficDirection = "outbound"
 )
 
+// Visibility defines whether a given config or service is exported to local namespace, all namespaces or none
+type Visibility string
+
+const (
+	// VisibilityPrivate implies namespace local config
+	VisibilityPrivate Visibility = "."
+	// VisibilityPublic implies config is visible to all
+	VisibilityPublic Visibility = "*"
+	// VisibilityNone implies config is visible to none
+	VisibilityNone Visibility = "~"
+)
+
 // ParseProtocol from string ignoring case
 func ParseProtocol(s string) Protocol {
 	switch strings.ToLower(s) {
@@ -199,6 +222,8 @@ func ParseProtocol(s string) Protocol {
 		return ProtocolUDP
 	case "grpc":
 		return ProtocolGRPC
+	case "grpc-web":
+		return ProtocolGRPCWeb
 	case "http":
 		return ProtocolHTTP
 	case "http2":
@@ -211,6 +236,8 @@ func ParseProtocol(s string) Protocol {
 		return ProtocolMongo
 	case "redis":
 		return ProtocolRedis
+	case "mysql":
+		return ProtocolMySQL
 	}
 
 	return ProtocolUnsupported
@@ -219,7 +246,7 @@ func ParseProtocol(s string) Protocol {
 // IsHTTP2 is true for protocols that use HTTP/2 as transport protocol
 func (p Protocol) IsHTTP2() bool {
 	switch p {
-	case ProtocolHTTP2, ProtocolGRPC:
+	case ProtocolHTTP2, ProtocolGRPC, ProtocolGRPCWeb:
 		return true
 	default:
 		return false
@@ -229,7 +256,7 @@ func (p Protocol) IsHTTP2() bool {
 // IsHTTP is true for protocols that use HTTP as transport protocol
 func (p Protocol) IsHTTP() bool {
 	switch p {
-	case ProtocolHTTP, ProtocolHTTP2, ProtocolGRPC:
+	case ProtocolHTTP, ProtocolHTTP2, ProtocolGRPC, ProtocolGRPCWeb:
 		return true
 	default:
 		return false
@@ -239,7 +266,7 @@ func (p Protocol) IsHTTP() bool {
 // IsTCP is true for protocols that use TCP as transport protocol
 func (p Protocol) IsTCP() bool {
 	switch p {
-	case ProtocolTCP, ProtocolHTTPS, ProtocolTLS, ProtocolMongo, ProtocolRedis:
+	case ProtocolTCP, ProtocolHTTPS, ProtocolTLS, ProtocolMongo, ProtocolRedis, ProtocolMySQL:
 		return true
 	default:
 		return false
@@ -298,6 +325,12 @@ type NetworkEndpoint struct {
 
 	// The network where this endpoint is present
 	Network string
+
+	// The locality where the endpoint is present. / separated string
+	Locality string
+
+	// The load balancing weight associated with this endpoint.
+	LbWeight uint32
 }
 
 // Labels is a non empty set of arbitrary strings. Each version of a service can
@@ -340,36 +373,28 @@ type ProbeList []*Probe
 //      --> NetworkEndpoint(172.16.0.3:8888), Service(catalog.myservice.com), Labels(kitty=cat)
 //      --> NetworkEndpoint(172.16.0.4:8888), Service(catalog.myservice.com), Labels(kitty=cat)
 type ServiceInstance struct {
-	Endpoint         NetworkEndpoint `json:"endpoint,omitempty"`
-	Service          *Service        `json:"service,omitempty"`
-	Labels           Labels          `json:"labels,omitempty"`
-	AvailabilityZone string          `json:"az,omitempty"`
-	ServiceAccount   string          `json:"serviceaccount,omitempty"`
+	Endpoint       NetworkEndpoint `json:"endpoint,omitempty"`
+	Service        *Service        `json:"service,omitempty"`
+	Labels         Labels          `json:"labels,omitempty"`
+	ServiceAccount string          `json:"serviceaccount,omitempty"`
 }
 
-const (
-	// AZLabel indicates the region/zone of an instance. It is used if the native
-	// registry doesn't provide one.
-	AZLabel = "istio-az"
-)
-
-// GetAZ returns the availability zone from an instance.
+// GetLocality returns the availability zone from an instance.
 // - k8s: region/zone, extracted from node's failure-domain.beta.kubernetes.io/{region,zone}
 // - consul: defaults to 'instance.Datacenter'
 //
-// This is used by EDS to group the endpoints by AZ and by .
-// TODO: remove me?
-func (si *ServiceInstance) GetAZ() string {
-	if si.AvailabilityZone != "" {
-		return si.AvailabilityZone
+// This is used by CDS/EDS to group the endpoints by locality.
+func (si *ServiceInstance) GetLocality() string {
+	if si.Endpoint.Locality != "" {
+		return si.Endpoint.Locality
 	}
-	return si.Labels[AZLabel]
+	return si.Labels[LocalityLabel]
 }
 
 // IstioEndpoint has the information about a single address+port for a specific
 // service and shard.
 //
-// This will eventually replace NetworkEndpoint and ServiceInstance:
+// TODO: Replace NetworkEndpoint and ServiceInstance with Istio endpoints
 // - ServicePortName replaces ServicePort, since port number and protocol may not
 // be available when endpoint callbacks are made.
 // - It no longer splits into one ServiceInstance and one NetworkEndpoint - both
@@ -413,6 +438,12 @@ type IstioEndpoint struct {
 
 	// Network holds the network where this endpoint is present
 	Network string
+
+	// The locality where the endpoint is present. / separated string
+	Locality string
+
+	// The load balancing weight associated with this endpoint.
+	LbWeight uint32
 }
 
 // ServiceAttributes represents a group of custom attributes of the service.
@@ -423,6 +454,9 @@ type ServiceAttributes struct {
 	Namespace string
 	// UID is "destination.service.uid" attribute
 	UID string
+	// ExportTo defines the visibility of Service in
+	// a namespace when the namespace is imported.
+	ExportTo map[Visibility]bool
 }
 
 // ServiceDiscovery enumerates Istio service instances.
@@ -489,20 +523,17 @@ type ServiceDiscovery interface {
 	// These probes are used by the platform to identify requests that are performing
 	// health checks.
 	WorkloadHealthCheckInfo(addr string) ProbeList
-}
 
-// ServiceAccounts exposes Istio service accounts
-// Deprecated - service account tracking moved to XdsServer, incremental.
-type ServiceAccounts interface {
 	// GetIstioServiceAccounts returns a list of service accounts looked up from
 	// the specified service hostname and ports.
+	// Deprecated - service account tracking moved to XdsServer, incremental.
 	GetIstioServiceAccounts(hostname Hostname, ports []int) []string
 }
 
-// Matches returns true if this Hostname "matches" the other hostname. Hostnames match if:
+// Matches returns true if this hostname overlaps with the other hostname. Hostnames overlap if:
 // - they're fully resolved (i.e. not wildcarded) and match exactly (i.e. an exact string match)
 // - one or both are wildcarded (e.g. "*.foo.com"), in which case we use wildcard resolution rules
-// to determine if h is covered by o.
+// to determine if h is covered by o or o is covered by h.
 // e.g.:
 //  Hostname("foo.com").Matches("foo.com")   = true
 //  Hostname("foo.com").Matches("bar.com")   = false
@@ -512,70 +543,55 @@ type ServiceAccounts interface {
 //  Hostname("*").Matches("foo.com") = true
 //  Hostname("*").Matches("*.com") = true
 func (h Hostname) Matches(o Hostname) bool {
-	if len(h) == 0 && len(o) == 0 {
-		return true
-	}
+	hWildcard := len(h) > 0 && string(h[0]) == "*"
+	oWildcard := len(o) > 0 && string(o[0]) == "*"
 
-	hWildcard := string(h[0]) == "*"
-	if hWildcard && len(o) == 0 {
-		return true
-	}
-
-	oWildcard := string(o[0]) == "*"
-	if !hWildcard && !oWildcard {
-		// both are non-wildcards, so do normal string comparison
-		return h == o
-	}
-
-	longer, shorter := string(h), string(o)
 	if hWildcard {
-		longer = string(h[1:])
-	}
-	if oWildcard {
-		shorter = string(o[1:])
-	}
-	if len(longer) < len(shorter) {
-		longer, shorter = shorter, longer
-		hWildcard, oWildcard = oWildcard, hWildcard
+		if oWildcard {
+			// both h and o are wildcards
+			if len(h) < len(o) {
+				return strings.HasSuffix(string(o[1:]), string(h[1:]))
+			}
+			return strings.HasSuffix(string(h[1:]), string(o[1:]))
+		}
+		// only h is wildcard
+		return strings.HasSuffix(string(o), string(h[1:]))
 	}
 
-	matches := strings.HasSuffix(longer, shorter)
-	if matches && hWildcard && !oWildcard && strings.TrimSuffix(longer, shorter) == "." {
-		// we match, but the longer is a wildcard and the shorter is not; we need to ensure we don't match input
-		// like `*.foo.com` to `foo.com` in that case (to avoid matching a domain literal to a wildcard subdomain)
-		return false
+	if oWildcard {
+		// only o is wildcard
+		return strings.HasSuffix(string(h), string(o[1:]))
 	}
-	return matches
+
+	// both are non-wildcards, so do normal string comparison
+	return h == o
 }
 
 // SubsetOf returns true if this hostname is a valid subset of the other hostname. The semantics are
-// the same as "Matches", but only in one direction.
+// the same as "Matches", but only in one direction (i.e., h is covered by o).
 func (h Hostname) SubsetOf(o Hostname) bool {
-	if len(h) == 0 && len(o) == 0 {
-		return true
-	}
+	hWildcard := len(h) > 0 && string(h[0]) == "*"
+	oWildcard := len(o) > 0 && string(o[0]) == "*"
 
-	hWildcard := string(h[0]) == "*"
-	oWildcard := string(o[0]) == "*"
-	if !oWildcard {
-		if hWildcard {
-			return false
-		}
-		return h == o
-	}
-
-	longer, shorter := string(h), string(o)
 	if hWildcard {
-		longer = string(h[1:])
-	}
-	if oWildcard {
-		shorter = string(o[1:])
-	}
-	if len(longer) < len(shorter) {
+		if oWildcard {
+			// both h and o are wildcards
+			if len(h) < len(o) {
+				return false
+			}
+			return strings.HasSuffix(string(h[1:]), string(o[1:]))
+		}
+		// only h is wildcard
 		return false
 	}
 
-	return strings.HasSuffix(longer, shorter)
+	if oWildcard {
+		// only o is wildcard
+		return strings.HasSuffix(string(h), string(o[1:]))
+	}
+
+	// both are non-wildcards, so do normal string comparison
+	return h == o
 }
 
 // Hostnames is a collection of Hostname; it exists so it's easy to sort hostnames consistently across Pilot.
@@ -898,7 +914,9 @@ func ParseLabelsString(s string) Labels {
 }
 
 // GetServiceAddressForProxy returns a Service's IP address specific to the cluster where the node resides
-func (s Service) GetServiceAddressForProxy(node *Proxy) string {
+func (s *Service) GetServiceAddressForProxy(node *Proxy) string {
+	s.Mutex.RLock()
+	defer s.Mutex.RUnlock()
 	if node.ClusterID != "" && s.ClusterVIPs[node.ClusterID] != "" {
 		return s.ClusterVIPs[node.ClusterID]
 	}

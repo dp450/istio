@@ -26,12 +26,14 @@ spec:
       - args:
         - proxy
         - sidecar
+        - --domain
+        - $(POD_NAMESPACE).svc.cluster.local
         - --configPath
         - /etc/istio/proxy
         - --binaryPath
         - /usr/local/bin/envoy
         - --serviceCluster
-        - resource.default
+        - resource.$(POD_NAMESPACE)
         - --drainDuration
         - 2s
         - --parentShutdownDuration
@@ -50,6 +52,8 @@ spec:
         - "15020"
         - --applicationPorts
         - "80"
+        - --concurrency
+        - "1"
         env:
         - name: POD_NAME
           valueFrom:
@@ -67,6 +71,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        - name: ISTIO_META_CONFIG_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: ISTIO_META_INTERCEPTION_MODE
           value: REDIRECT
         image: gcr.io/istio-release/proxyv2:master-latest-daily
@@ -117,8 +125,8 @@ spec:
         name: istio-init
         resources:
           limits:
-            cpu: 10m
-            memory: 10Mi
+            cpu: 100m
+            memory: 50Mi
           requests:
             cpu: 10m
             memory: 10Mi

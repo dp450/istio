@@ -111,16 +111,16 @@ inbound|9080||productpage.default.svc.cluster.local     1
 		},
 		{ // case 10 endpoint valid
 			execClientConfig: endpointConfig,
-			args:             strings.Split("proxy-config endpoint details-v1-5b7f94f9bc-wp5tb --port=9093", " "),
-			expectedOutput: `ENDPOINT             STATUS        CLUSTER
-172.17.0.14:9093     UNHEALTHY     outbound|9093||istio-policy.istio-system.svc.cluster.local
+			args:             strings.Split("proxy-config endpoint details-v1-5b7f94f9bc-wp5tb --port=15014", " "),
+			expectedOutput: `ENDPOINT              STATUS        CLUSTER
+172.17.0.14:15014     UNHEALTHY     outbound|15014||istio-policy.istio-system.svc.cluster.local
 `,
 		},
 		{ // case 11 endpoint status filter
 			execClientConfig: endpointConfig,
 			args:             strings.Split("proxy-config endpoint details-v1-5b7f94f9bc-wp5tb --status=unhealthy", " "),
-			expectedOutput: `ENDPOINT             STATUS        CLUSTER
-172.17.0.14:9093     UNHEALTHY     outbound|9093||istio-policy.istio-system.svc.cluster.local
+			expectedOutput: `ENDPOINT              STATUS        CLUSTER
+172.17.0.14:15014     UNHEALTHY     outbound|15014||istio-policy.istio-system.svc.cluster.local
 `,
 		},
 	}
@@ -183,10 +183,12 @@ func mockClientExecFactoryGenerator(testResults map[string][]byte) func(kubeconf
 	return outFactory
 }
 
+// nolint: unparam
 func (client mockExecConfig) AllPilotsDiscoveryDo(pilotNamespace, method, path string, body []byte) (map[string][]byte, error) {
 	return client.results, nil
 }
 
+// nolint: unparam
 func (client mockExecConfig) EnvoyDo(podName, podNamespace, method, path string, body []byte) ([]byte, error) {
 	results, ok := client.results[podName]
 	if !ok {
@@ -195,6 +197,7 @@ func (client mockExecConfig) EnvoyDo(podName, podNamespace, method, path string,
 	return results, nil
 }
 
+// nolint: unparam
 func (client mockExecConfig) PilotDiscoveryDo(pilotNamespace, method, path string, body []byte) ([]byte, error) {
 	for _, results := range client.results {
 		return results, nil

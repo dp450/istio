@@ -21,7 +21,7 @@ syntax = "proto3";
 // 
 // Example config:
 // 
-// ```
+// ```yaml
 // apiVersion: "config.istio.io/v1alpha2"
 // kind: quota
 // metadata:
@@ -84,6 +84,8 @@ message HandleQuotaRequest {
     // Expresses the quota allocation request.
     istio.mixer.adapter.model.v1beta1.QuotaRequest quota_request = 4;
 }
+
+
 
 
 

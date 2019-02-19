@@ -19,7 +19,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/envoyproxy/go-control-plane/envoy/api/v2"
+	v2 "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	"github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	"github.com/envoyproxy/go-control-plane/envoy/api/v2/listener"
 	"github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
@@ -49,6 +49,10 @@ admin:
 node:
   id: id
   cluster: unknown
+  metadata:
+    # these two must come together and they need to be set
+    NODE_UID: pod.ns
+    NODE_NAMESPACE: ns
 dynamic_resources:
   lds_config: { ads: {} }
   ads_config:
@@ -267,6 +271,8 @@ func TestPilotPlugin(t *testing.T) {
 	}()
 	defer grpcServer.GracefulStop()
 
+	s.SetMixerSourceUID("pod.ns")
+
 	if err := s.SetUp(); err != nil {
 		t.Fatalf("Failed to setup test: %v", err)
 	}
@@ -295,9 +301,10 @@ func (mock) GetService(_ model.Hostname) (*model.Service, error) { return nil, n
 func (mock) InstancesByPort(_ model.Hostname, _ int, _ model.LabelsCollection) ([]*model.ServiceInstance, error) {
 	return nil, nil
 }
-func (mock) ManagementPorts(_ string) model.PortList          { return nil }
-func (mock) Services() ([]*model.Service, error)              { return nil, nil }
-func (mock) WorkloadHealthCheckInfo(_ string) model.ProbeList { return nil }
+func (mock) ManagementPorts(_ string) model.PortList                               { return nil }
+func (mock) Services() ([]*model.Service, error)                                   { return nil, nil }
+func (mock) WorkloadHealthCheckInfo(_ string) model.ProbeList                      { return nil }
+func (mock) GetIstioServiceAccounts(hostname model.Hostname, ports []int) []string { return nil }
 
 const (
 	id = "id"
@@ -330,10 +337,7 @@ var (
 		Env:              mesh,
 		Node: &model.Proxy{
 			ID:   "pod1.ns2",
-			Type: model.Sidecar,
-			Metadata: map[string]string{
-				"ISTIO_PROXY_VERSION": "1.1",
-			},
+			Type: model.SidecarProxy,
 		},
 		ServiceInstance: &model.ServiceInstance{Service: &svc},
 		Push:            &pushContext,
@@ -343,10 +347,7 @@ var (
 		Env:              mesh,
 		Node: &model.Proxy{
 			ID:   "pod2.ns2",
-			Type: model.Sidecar,
-			Metadata: map[string]string{
-				"ISTIO_PROXY_VERSION": "1.1",
-			},
+			Type: model.SidecarProxy,
 		},
 		Service: &svc,
 		Push:    &pushContext,
@@ -401,8 +402,8 @@ func makeSnapshot(s *env.TestSetup, t *testing.T) cache.Snapshot {
 	}
 	serverManager.HttpFilters = append(serverMutable.FilterChains[0].HTTP, serverManager.HttpFilters...)
 	serverListener.FilterChains = []listener.FilterChain{{Filters: []listener.Filter{{
-		Name:   util.HTTPConnectionManager,
-		Config: pilotutil.MessageToStruct(serverManager),
+		Name:       util.HTTPConnectionManager,
+		ConfigType: &listener.Filter_TypedConfig{TypedConfig: pilotutil.MessageToAny(serverManager)},
 	}}}}
 
 	clientMutable := plugin.MutableObjects{Listener: clientListener, FilterChains: []plugin.FilterChain{{}}}
@@ -411,8 +412,8 @@ func makeSnapshot(s *env.TestSetup, t *testing.T) cache.Snapshot {
 	}
 	clientManager.HttpFilters = append(clientMutable.FilterChains[0].HTTP, clientManager.HttpFilters...)
 	clientListener.FilterChains = []listener.FilterChain{{Filters: []listener.Filter{{
-		Name:   util.HTTPConnectionManager,
-		Config: pilotutil.MessageToStruct(clientManager),
+		Name:       util.HTTPConnectionManager,
+		ConfigType: &listener.Filter_TypedConfig{TypedConfig: pilotutil.MessageToAny(clientManager)},
 	}}}}
 
 	p.OnInboundRouteConfiguration(&serverParams, serverRoute)

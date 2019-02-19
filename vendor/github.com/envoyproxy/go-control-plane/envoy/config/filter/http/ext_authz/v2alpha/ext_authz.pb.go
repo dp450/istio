@@ -7,6 +7,8 @@ import proto "github.com/gogo/protobuf/proto"
 import fmt "fmt"
 import math "math"
 import core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
+import matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher"
+import _ "github.com/lyft/protoc-gen-validate/validate"
 
 import io "io"
 
@@ -21,23 +23,25 @@ var _ = math.Inf
 // proto package needs to be updated.
 const _ = proto.GoGoProtoPackageIsVersion2 // please upgrade the proto package
 
-// External Authorization filter calls out to an external service over either:
-//
-//  1. gRPC Authorization API defined by :ref:`CheckRequest
-//     <envoy_api_msg_service.auth.v2alpha.CheckRequest>`.
-//  2. Raw HTTP Authorization server by passing the request headers to the service.
-//
-// A failed check will cause this filter to close the HTTP request normally with 403 (Forbidden),
-// unless a different status code has been indicated in the authorization response.
+// External Authorization filter calls out to an external service over either
+// gRPC or raw HTTP clients.
 type ExtAuthz struct {
 	// Types that are valid to be assigned to Services:
 	//	*ExtAuthz_GrpcService
 	//	*ExtAuthz_HttpService
 	Services isExtAuthz_Services `protobuf_oneof:"services"`
-	// The filter's behaviour in case the external authorization service does
-	// not respond back. When it is set to true, Envoy will also allow traffic in case of
-	// an error occurs during the authorization process.
-	// Defaults to false.
+	// Allows bypassing the filter on errors during the authorization process.
+	//
+	//  1. When *failure_mode_allow* is true, traffic will be allowed in the presence of an error.
+	//  This includes any of the HTTP 5xx errors, or a communication failure between the filter and
+	//  the authorization server.
+	//  2. When *failure_mode_allow* is false, the filter will *always* return a *Forbidden response*
+	//  to the client. It will *not allow* traffic to the upstream in the presence of an error. This
+	//  includes any of the HTTP 5xx errors, or a communication failure between the filter and the
+	//  authorization server.
+	//
+	// Note that filter will produce stats on error. See *Statistics* at :ref:`configuration overview
+	// <config_http_filters_ext_authz>`.
 	FailureModeAllow     bool     `protobuf:"varint,2,opt,name=failure_mode_allow,json=failureModeAllow,proto3" json:"failure_mode_allow,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
@@ -48,7 +52,7 @@ func (m *ExtAuthz) Reset()         { *m = ExtAuthz{} }
 func (m *ExtAuthz) String() string { return proto.CompactTextString(m) }
 func (*ExtAuthz) ProtoMessage()    {}
 func (*ExtAuthz) Descriptor() ([]byte, []int) {
-	return fileDescriptor_ext_authz_6e713e13278d18e2, []int{0}
+	return fileDescriptor_ext_authz_7f90224561a9d52f, []int{0}
 }
 func (m *ExtAuthz) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -84,10 +88,10 @@ type isExtAuthz_Services interface {
 }
 
 type ExtAuthz_GrpcService struct {
-	GrpcService *core.GrpcService `protobuf:"bytes,1,opt,name=grpc_service,json=grpcService,oneof"`
+	GrpcService *core.GrpcService `protobuf:"bytes,1,opt,name=grpc_service,json=grpcService,proto3,oneof"`
 }
 type ExtAuthz_HttpService struct {
-	HttpService *HttpService `protobuf:"bytes,3,opt,name=http_service,json=httpService,oneof"`
+	HttpService *HttpService `protobuf:"bytes,3,opt,name=http_service,json=httpService,proto3,oneof"`
 }
 
 func (*ExtAuthz_GrpcService) isExtAuthz_Services() {}
@@ -195,59 +199,49 @@ func _ExtAuthz_OneofSizer(msg proto.Message) (n int) {
 	return n
 }
 
-// External Authorization filter calls out to an upstream authorization server by passing the raw
+// External Authorization filter calls an authorization server by passing the raw
 // HTTP request headers to the server. This allows the authorization service to take a decision
-// whether the request is authorized or not.
+// whether the request should be authorized or not.
 //
 // A successful check allows the authorization service adding or overriding headers from the
-// original request before dispatching it to the upstream. This is done by configuring which headers
-// in the authorization response should be sent to the upstream. See *allowed_authorization_headers*
-// bellow.
+// original request before dispatching them to the upstream. This is done by configuring which
+// headers in the authorization response should be sent to the upstream. See
+// :ref:`allowed_upstream_headers
+// <envoy_api_field_config.filter.http.ext_authz.v2alpha.AuthorizationResponse.allowed_upstream_headers>`
+// for more details.
 //
 // A failed check will cause this filter to close the HTTP request with 403 (Forbidden),
 // unless a different status code has been indicated by the authorization server via response
-// headers.
+// headers. In addition to the the status code and with exception of the *Authority*, the filter
+// will send all headers from the authorization server back to the client by default. See
+// :ref:`allowed_client_headers
+// <envoy_api_field_config.filter.http.ext_authz.v2alpha.AuthorizationResponse.allowed_client_headers>`
+// for more details.
 //
-// If an error happens during the checking process, two situations may occur depending on the
-// filter's configuration:
+//  .. note::
 //
-//  1. When *failure_mode_allow* is true, traffic will be allowed in the presence of an error. This
-//     includes any of the HTTP 5xx errors, or a communication failure between the filter and the
-//     authorization server.
-//  2. When *failure_mode_allow* is false, the filter will *always* return a *Forbidden response* to
-//     the client. It will *not allow* traffic to the upstream in the presence of an error. This
-//     includes any of the HTTP 5xx errors, or a communication failure between the filter and the
-//     authorization server.
-//
-// Note that filter will produce stats on error. See *Statistics* at :ref:`configuration overview
-// <config_http_filters_ext_authz>`.
+//    Unlike the gRPC client that request and response headers are passed in the message,
+//    headers forwarded by via the raw HTTP client will affect the request or the response.
 type HttpService struct {
 	// Sets the HTTP server URI which the authorization requests must be sent to.
-	ServerUri *core.HttpUri `protobuf:"bytes,1,opt,name=server_uri,json=serverUri" json:"server_uri,omitempty"`
+	ServerUri *core.HttpUri `protobuf:"bytes,1,opt,name=server_uri,json=serverUri,proto3" json:"server_uri,omitempty"`
 	// Sets an optional prefix to the value of authorization request header *Path*.
 	PathPrefix string `protobuf:"bytes,2,opt,name=path_prefix,json=pathPrefix,proto3" json:"path_prefix,omitempty"`
-	// Sets a list of headers that can be sent from the authorization server to the upstream service,
-	// or to the downstream client when present in the authorization response. Note that a matched
-	// request header will have its value overridden by the ones sent from the authorization server.
-	AllowedAuthorizationHeaders []string `protobuf:"bytes,4,rep,name=allowed_authorization_headers,json=allowedAuthorizationHeaders" json:"allowed_authorization_headers,omitempty"`
-	// Sets a list of headers that should be sent *from the filter* to the authorization server
-	// when they are also present in the client request. Note that *Content-Length*, *Authority*,
-	// *Method* and *Path* are always dispatched to the authorization server by default. The message
-	// will not contain body data and the *Content-Length* will be set to zero.
-	AllowedRequestHeaders []string `protobuf:"bytes,5,rep,name=allowed_request_headers,json=allowedRequestHeaders" json:"allowed_request_headers,omitempty"`
-	// Sets a list of headers and their values that will be added to the request to external
-	// authorization server. Note that these will override the headers coming from the downstream.
-	AuthorizationHeadersToAdd []*core.HeaderValue `protobuf:"bytes,6,rep,name=authorization_headers_to_add,json=authorizationHeadersToAdd" json:"authorization_headers_to_add,omitempty"`
-	XXX_NoUnkeyedLiteral      struct{}            `json:"-"`
-	XXX_unrecognized          []byte              `json:"-"`
-	XXX_sizecache             int32               `json:"-"`
+	// Settings for controlling request headers forwarded from the filter to the authorization server.
+	AuthorizationRequest *AuthorizationRequest `protobuf:"bytes,7,opt,name=authorization_request,json=authorizationRequest,proto3" json:"authorization_request,omitempty"`
+	// Settings for controlling authorization response forwarded from the filter to a client,
+	// or to an upstream service.
+	AuthorizationResponse *AuthorizationResponse `protobuf:"bytes,8,opt,name=authorization_response,json=authorizationResponse,proto3" json:"authorization_response,omitempty"`
+	XXX_NoUnkeyedLiteral  struct{}               `json:"-"`
+	XXX_unrecognized      []byte                 `json:"-"`
+	XXX_sizecache         int32                  `json:"-"`
 }
 
 func (m *HttpService) Reset()         { *m = HttpService{} }
 func (m *HttpService) String() string { return proto.CompactTextString(m) }
 func (*HttpService) ProtoMessage()    {}
 func (*HttpService) Descriptor() ([]byte, []int) {
-	return fileDescriptor_ext_authz_6e713e13278d18e2, []int{1}
+	return fileDescriptor_ext_authz_7f90224561a9d52f, []int{1}
 }
 func (m *HttpService) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -290,23 +284,358 @@ func (m *HttpService) GetPathPrefix() string {
 	return ""
 }
 
-func (m *HttpService) GetAllowedAuthorizationHeaders() []string {
+func (m *HttpService) GetAuthorizationRequest() *AuthorizationRequest {
 	if m != nil {
-		return m.AllowedAuthorizationHeaders
+		return m.AuthorizationRequest
 	}
 	return nil
 }
 
-func (m *HttpService) GetAllowedRequestHeaders() []string {
+func (m *HttpService) GetAuthorizationResponse() *AuthorizationResponse {
 	if m != nil {
-		return m.AllowedRequestHeaders
+		return m.AuthorizationResponse
 	}
 	return nil
 }
 
-func (m *HttpService) GetAuthorizationHeadersToAdd() []*core.HeaderValue {
+type AuthorizationRequest struct {
+	// Sets a list of matchers that are used to determine which client request headers should
+	// be forwarded *from the filter* to the authorization server. Note that *Content-Length*,
+	// *Authority*, *Method*, *Path* and *Authorization* are always dispatched to the authorization
+	// server by default. The message will not contain body data and the *Content-Length* will be set
+	// to zero.
+	AllowedHeaders *matcher.ListStringMatcher `protobuf:"bytes,1,opt,name=allowed_headers,json=allowedHeaders,proto3" json:"allowed_headers,omitempty"`
+	// Sets a list of headers and their values that will be added to the request to external
+	// authorization server. Note that these will override the headers coming from the downstream.
+	HeadersToAdd         []*core.HeaderValue `protobuf:"bytes,2,rep,name=headers_to_add,json=headersToAdd,proto3" json:"headers_to_add,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}            `json:"-"`
+	XXX_unrecognized     []byte              `json:"-"`
+	XXX_sizecache        int32               `json:"-"`
+}
+
+func (m *AuthorizationRequest) Reset()         { *m = AuthorizationRequest{} }
+func (m *AuthorizationRequest) String() string { return proto.CompactTextString(m) }
+func (*AuthorizationRequest) ProtoMessage()    {}
+func (*AuthorizationRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_ext_authz_7f90224561a9d52f, []int{2}
+}
+func (m *AuthorizationRequest) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *AuthorizationRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_AuthorizationRequest.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalTo(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (dst *AuthorizationRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_AuthorizationRequest.Merge(dst, src)
+}
+func (m *AuthorizationRequest) XXX_Size() int {
+	return m.Size()
+}
+func (m *AuthorizationRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_AuthorizationRequest.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_AuthorizationRequest proto.InternalMessageInfo
+
+func (m *AuthorizationRequest) GetAllowedHeaders() *matcher.ListStringMatcher {
 	if m != nil {
-		return m.AuthorizationHeadersToAdd
+		return m.AllowedHeaders
+	}
+	return nil
+}
+
+func (m *AuthorizationRequest) GetHeadersToAdd() []*core.HeaderValue {
+	if m != nil {
+		return m.HeadersToAdd
+	}
+	return nil
+}
+
+type AuthorizationResponse struct {
+	// Sets a list of matchers that are used to determine which authorization response headers should
+	// be forwarded *from the filter* to the upstream service only when the HTTP status is a 200 OK.
+	// Note that these headers will override that the original request headers when respectively
+	// matched.
+	AllowedUpstreamHeaders *matcher.ListStringMatcher `protobuf:"bytes,1,opt,name=allowed_upstream_headers,json=allowedUpstreamHeaders,proto3" json:"allowed_upstream_headers,omitempty"`
+	// Sets a list of keys that are used to determine which authorization response headers should
+	// be forwarded *from the filter* to the client when the HTTP status is *NOT* a 200 OK. Note that
+	// when this list is empty, all the authorization response headers, except *Authority* will be
+	// sent to the client (default). When a header is included in this list, *Path*, *Status*,
+	// *Content-Length*, *WWWAuthenticate* and *Location* are automatically added.
+	AllowedClientHeaders *matcher.ListStringMatcher `protobuf:"bytes,2,opt,name=allowed_client_headers,json=allowedClientHeaders,proto3" json:"allowed_client_headers,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}                   `json:"-"`
+	XXX_unrecognized     []byte                     `json:"-"`
+	XXX_sizecache        int32                      `json:"-"`
+}
+
+func (m *AuthorizationResponse) Reset()         { *m = AuthorizationResponse{} }
+func (m *AuthorizationResponse) String() string { return proto.CompactTextString(m) }
+func (*AuthorizationResponse) ProtoMessage()    {}
+func (*AuthorizationResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_ext_authz_7f90224561a9d52f, []int{3}
+}
+func (m *AuthorizationResponse) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *AuthorizationResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_AuthorizationResponse.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalTo(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (dst *AuthorizationResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_AuthorizationResponse.Merge(dst, src)
+}
+func (m *AuthorizationResponse) XXX_Size() int {
+	return m.Size()
+}
+func (m *AuthorizationResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_AuthorizationResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_AuthorizationResponse proto.InternalMessageInfo
+
+func (m *AuthorizationResponse) GetAllowedUpstreamHeaders() *matcher.ListStringMatcher {
+	if m != nil {
+		return m.AllowedUpstreamHeaders
+	}
+	return nil
+}
+
+func (m *AuthorizationResponse) GetAllowedClientHeaders() *matcher.ListStringMatcher {
+	if m != nil {
+		return m.AllowedClientHeaders
+	}
+	return nil
+}
+
+// Extra settings on a per virtualhost/route/weighter-cluster level.
+type ExtAuthzPerRoute struct {
+	// Types that are valid to be assigned to Override:
+	//	*ExtAuthzPerRoute_Disabled
+	//	*ExtAuthzPerRoute_CheckSettings
+	Override             isExtAuthzPerRoute_Override `protobuf_oneof:"override"`
+	XXX_NoUnkeyedLiteral struct{}                    `json:"-"`
+	XXX_unrecognized     []byte                      `json:"-"`
+	XXX_sizecache        int32                       `json:"-"`
+}
+
+func (m *ExtAuthzPerRoute) Reset()         { *m = ExtAuthzPerRoute{} }
+func (m *ExtAuthzPerRoute) String() string { return proto.CompactTextString(m) }
+func (*ExtAuthzPerRoute) ProtoMessage()    {}
+func (*ExtAuthzPerRoute) Descriptor() ([]byte, []int) {
+	return fileDescriptor_ext_authz_7f90224561a9d52f, []int{4}
+}
+func (m *ExtAuthzPerRoute) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *ExtAuthzPerRoute) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_ExtAuthzPerRoute.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalTo(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (dst *ExtAuthzPerRoute) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_ExtAuthzPerRoute.Merge(dst, src)
+}
+func (m *ExtAuthzPerRoute) XXX_Size() int {
+	return m.Size()
+}
+func (m *ExtAuthzPerRoute) XXX_DiscardUnknown() {
+	xxx_messageInfo_ExtAuthzPerRoute.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_ExtAuthzPerRoute proto.InternalMessageInfo
+
+type isExtAuthzPerRoute_Override interface {
+	isExtAuthzPerRoute_Override()
+	MarshalTo([]byte) (int, error)
+	Size() int
+}
+
+type ExtAuthzPerRoute_Disabled struct {
+	Disabled bool `protobuf:"varint,1,opt,name=disabled,proto3,oneof"`
+}
+type ExtAuthzPerRoute_CheckSettings struct {
+	CheckSettings *CheckSettings `protobuf:"bytes,2,opt,name=check_settings,json=checkSettings,proto3,oneof"`
+}
+
+func (*ExtAuthzPerRoute_Disabled) isExtAuthzPerRoute_Override()      {}
+func (*ExtAuthzPerRoute_CheckSettings) isExtAuthzPerRoute_Override() {}
+
+func (m *ExtAuthzPerRoute) GetOverride() isExtAuthzPerRoute_Override {
+	if m != nil {
+		return m.Override
+	}
+	return nil
+}
+
+func (m *ExtAuthzPerRoute) GetDisabled() bool {
+	if x, ok := m.GetOverride().(*ExtAuthzPerRoute_Disabled); ok {
+		return x.Disabled
+	}
+	return false
+}
+
+func (m *ExtAuthzPerRoute) GetCheckSettings() *CheckSettings {
+	if x, ok := m.GetOverride().(*ExtAuthzPerRoute_CheckSettings); ok {
+		return x.CheckSettings
+	}
+	return nil
+}
+
+// XXX_OneofFuncs is for the internal use of the proto package.
+func (*ExtAuthzPerRoute) XXX_OneofFuncs() (func(msg proto.Message, b *proto.Buffer) error, func(msg proto.Message, tag, wire int, b *proto.Buffer) (bool, error), func(msg proto.Message) (n int), []interface{}) {
+	return _ExtAuthzPerRoute_OneofMarshaler, _ExtAuthzPerRoute_OneofUnmarshaler, _ExtAuthzPerRoute_OneofSizer, []interface{}{
+		(*ExtAuthzPerRoute_Disabled)(nil),
+		(*ExtAuthzPerRoute_CheckSettings)(nil),
+	}
+}
+
+func _ExtAuthzPerRoute_OneofMarshaler(msg proto.Message, b *proto.Buffer) error {
+	m := msg.(*ExtAuthzPerRoute)
+	// override
+	switch x := m.Override.(type) {
+	case *ExtAuthzPerRoute_Disabled:
+		t := uint64(0)
+		if x.Disabled {
+			t = 1
+		}
+		_ = b.EncodeVarint(1<<3 | proto.WireVarint)
+		_ = b.EncodeVarint(t)
+	case *ExtAuthzPerRoute_CheckSettings:
+		_ = b.EncodeVarint(2<<3 | proto.WireBytes)
+		if err := b.EncodeMessage(x.CheckSettings); err != nil {
+			return err
+		}
+	case nil:
+	default:
+		return fmt.Errorf("ExtAuthzPerRoute.Override has unexpected type %T", x)
+	}
+	return nil
+}
+
+func _ExtAuthzPerRoute_OneofUnmarshaler(msg proto.Message, tag, wire int, b *proto.Buffer) (bool, error) {
+	m := msg.(*ExtAuthzPerRoute)
+	switch tag {
+	case 1: // override.disabled
+		if wire != proto.WireVarint {
+			return true, proto.ErrInternalBadWireType
+		}
+		x, err := b.DecodeVarint()
+		m.Override = &ExtAuthzPerRoute_Disabled{x != 0}
+		return true, err
+	case 2: // override.check_settings
+		if wire != proto.WireBytes {
+			return true, proto.ErrInternalBadWireType
+		}
+		msg := new(CheckSettings)
+		err := b.DecodeMessage(msg)
+		m.Override = &ExtAuthzPerRoute_CheckSettings{msg}
+		return true, err
+	default:
+		return false, nil
+	}
+}
+
+func _ExtAuthzPerRoute_OneofSizer(msg proto.Message) (n int) {
+	m := msg.(*ExtAuthzPerRoute)
+	// override
+	switch x := m.Override.(type) {
+	case *ExtAuthzPerRoute_Disabled:
+		n += 1 // tag and wire
+		n += 1
+	case *ExtAuthzPerRoute_CheckSettings:
+		s := proto.Size(x.CheckSettings)
+		n += 1 // tag and wire
+		n += proto.SizeVarint(uint64(s))
+		n += s
+	case nil:
+	default:
+		panic(fmt.Sprintf("proto: unexpected type %T in oneof", x))
+	}
+	return n
+}
+
+// Extra settings for the check request. You can use this to provide extra context for the
+// ext-authz server on specific virtual hosts \ routes. For example, adding a context extension on
+// the virtual host level can give the ext-authz server information on what virtual host is used
+// without needing to parse the host header.
+// If CheckSettings is specified in multiple per-filter-configs, they will be merged in order,
+// and the result will be be used.
+type CheckSettings struct {
+	// Context extensions to set on the CheckRequest's
+	// :ref:`AttributeContext.context_extensions<envoy_api_field_service.auth.v2alpha.AttributeContext.context_extensions>`
+	//
+	// Merge semantics for this field are such that keys from more specific configs override.
+	//
+	// .. note::
+	//
+	//   These settings are only applied to a filter configured with a
+	//   :ref:`grpc_service<envoy_api_field_config.filter.http.ext_authz.v2alpha.ExtAuthz.grpc_service>`.
+	ContextExtensions    map[string]string `protobuf:"bytes,1,rep,name=context_extensions,json=contextExtensions,proto3" json:"context_extensions,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	XXX_NoUnkeyedLiteral struct{}          `json:"-"`
+	XXX_unrecognized     []byte            `json:"-"`
+	XXX_sizecache        int32             `json:"-"`
+}
+
+func (m *CheckSettings) Reset()         { *m = CheckSettings{} }
+func (m *CheckSettings) String() string { return proto.CompactTextString(m) }
+func (*CheckSettings) ProtoMessage()    {}
+func (*CheckSettings) Descriptor() ([]byte, []int) {
+	return fileDescriptor_ext_authz_7f90224561a9d52f, []int{5}
+}
+func (m *CheckSettings) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *CheckSettings) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_CheckSettings.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalTo(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (dst *CheckSettings) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_CheckSettings.Merge(dst, src)
+}
+func (m *CheckSettings) XXX_Size() int {
+	return m.Size()
+}
+func (m *CheckSettings) XXX_DiscardUnknown() {
+	xxx_messageInfo_CheckSettings.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_CheckSettings proto.InternalMessageInfo
+
+func (m *CheckSettings) GetContextExtensions() map[string]string {
+	if m != nil {
+		return m.ContextExtensions
 	}
 	return nil
 }
@@ -314,6 +643,11 @@ func (m *HttpService) GetAuthorizationHeadersToAdd() []*core.HeaderValue {
 func init() {
 	proto.RegisterType((*ExtAuthz)(nil), "envoy.config.filter.http.ext_authz.v2alpha.ExtAuthz")
 	proto.RegisterType((*HttpService)(nil), "envoy.config.filter.http.ext_authz.v2alpha.HttpService")
+	proto.RegisterType((*AuthorizationRequest)(nil), "envoy.config.filter.http.ext_authz.v2alpha.AuthorizationRequest")
+	proto.RegisterType((*AuthorizationResponse)(nil), "envoy.config.filter.http.ext_authz.v2alpha.AuthorizationResponse")
+	proto.RegisterType((*ExtAuthzPerRoute)(nil), "envoy.config.filter.http.ext_authz.v2alpha.ExtAuthzPerRoute")
+	proto.RegisterType((*CheckSettings)(nil), "envoy.config.filter.http.ext_authz.v2alpha.CheckSettings")
+	proto.RegisterMapType((map[string]string)(nil), "envoy.config.filter.http.ext_authz.v2alpha.CheckSettings.ContextExtensionsEntry")
 }
 func (m *ExtAuthz) Marshal() (dAtA []byte, err error) {
 	size := m.Size()
@@ -412,39 +746,60 @@ func (m *HttpService) MarshalTo(dAtA []byte) (int, error) {
 		i = encodeVarintExtAuthz(dAtA, i, uint64(len(m.PathPrefix)))
 		i += copy(dAtA[i:], m.PathPrefix)
 	}
-	if len(m.AllowedAuthorizationHeaders) > 0 {
-		for _, s := range m.AllowedAuthorizationHeaders {
-			dAtA[i] = 0x22
-			i++
-			l = len(s)
-			for l >= 1<<7 {
-				dAtA[i] = uint8(uint64(l)&0x7f | 0x80)
-				l >>= 7
-				i++
-			}
-			dAtA[i] = uint8(l)
-			i++
-			i += copy(dAtA[i:], s)
+	if m.AuthorizationRequest != nil {
+		dAtA[i] = 0x3a
+		i++
+		i = encodeVarintExtAuthz(dAtA, i, uint64(m.AuthorizationRequest.Size()))
+		n5, err := m.AuthorizationRequest.MarshalTo(dAtA[i:])
+		if err != nil {
+			return 0, err
 		}
+		i += n5
 	}
-	if len(m.AllowedRequestHeaders) > 0 {
-		for _, s := range m.AllowedRequestHeaders {
-			dAtA[i] = 0x2a
-			i++
-			l = len(s)
-			for l >= 1<<7 {
-				dAtA[i] = uint8(uint64(l)&0x7f | 0x80)
-				l >>= 7
-				i++
-			}
-			dAtA[i] = uint8(l)
-			i++
-			i += copy(dAtA[i:], s)
+	if m.AuthorizationResponse != nil {
+		dAtA[i] = 0x42
+		i++
+		i = encodeVarintExtAuthz(dAtA, i, uint64(m.AuthorizationResponse.Size()))
+		n6, err := m.AuthorizationResponse.MarshalTo(dAtA[i:])
+		if err != nil {
+			return 0, err
 		}
+		i += n6
 	}
-	if len(m.AuthorizationHeadersToAdd) > 0 {
-		for _, msg := range m.AuthorizationHeadersToAdd {
-			dAtA[i] = 0x32
+	if m.XXX_unrecognized != nil {
+		i += copy(dAtA[i:], m.XXX_unrecognized)
+	}
+	return i, nil
+}
+
+func (m *AuthorizationRequest) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalTo(dAtA)
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *AuthorizationRequest) MarshalTo(dAtA []byte) (int, error) {
+	var i int
+	_ = i
+	var l int
+	_ = l
+	if m.AllowedHeaders != nil {
+		dAtA[i] = 0xa
+		i++
+		i = encodeVarintExtAuthz(dAtA, i, uint64(m.AllowedHeaders.Size()))
+		n7, err := m.AllowedHeaders.MarshalTo(dAtA[i:])
+		if err != nil {
+			return 0, err
+		}
+		i += n7
+	}
+	if len(m.HeadersToAdd) > 0 {
+		for _, msg := range m.HeadersToAdd {
+			dAtA[i] = 0x12
 			i++
 			i = encodeVarintExtAuthz(dAtA, i, uint64(msg.Size()))
 			n, err := msg.MarshalTo(dAtA[i:])
@@ -452,6 +807,139 @@ func (m *HttpService) MarshalTo(dAtA []byte) (int, error) {
 				return 0, err
 			}
 			i += n
+		}
+	}
+	if m.XXX_unrecognized != nil {
+		i += copy(dAtA[i:], m.XXX_unrecognized)
+	}
+	return i, nil
+}
+
+func (m *AuthorizationResponse) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalTo(dAtA)
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *AuthorizationResponse) MarshalTo(dAtA []byte) (int, error) {
+	var i int
+	_ = i
+	var l int
+	_ = l
+	if m.AllowedUpstreamHeaders != nil {
+		dAtA[i] = 0xa
+		i++
+		i = encodeVarintExtAuthz(dAtA, i, uint64(m.AllowedUpstreamHeaders.Size()))
+		n8, err := m.AllowedUpstreamHeaders.MarshalTo(dAtA[i:])
+		if err != nil {
+			return 0, err
+		}
+		i += n8
+	}
+	if m.AllowedClientHeaders != nil {
+		dAtA[i] = 0x12
+		i++
+		i = encodeVarintExtAuthz(dAtA, i, uint64(m.AllowedClientHeaders.Size()))
+		n9, err := m.AllowedClientHeaders.MarshalTo(dAtA[i:])
+		if err != nil {
+			return 0, err
+		}
+		i += n9
+	}
+	if m.XXX_unrecognized != nil {
+		i += copy(dAtA[i:], m.XXX_unrecognized)
+	}
+	return i, nil
+}
+
+func (m *ExtAuthzPerRoute) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalTo(dAtA)
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *ExtAuthzPerRoute) MarshalTo(dAtA []byte) (int, error) {
+	var i int
+	_ = i
+	var l int
+	_ = l
+	if m.Override != nil {
+		nn10, err := m.Override.MarshalTo(dAtA[i:])
+		if err != nil {
+			return 0, err
+		}
+		i += nn10
+	}
+	if m.XXX_unrecognized != nil {
+		i += copy(dAtA[i:], m.XXX_unrecognized)
+	}
+	return i, nil
+}
+
+func (m *ExtAuthzPerRoute_Disabled) MarshalTo(dAtA []byte) (int, error) {
+	i := 0
+	dAtA[i] = 0x8
+	i++
+	if m.Disabled {
+		dAtA[i] = 1
+	} else {
+		dAtA[i] = 0
+	}
+	i++
+	return i, nil
+}
+func (m *ExtAuthzPerRoute_CheckSettings) MarshalTo(dAtA []byte) (int, error) {
+	i := 0
+	if m.CheckSettings != nil {
+		dAtA[i] = 0x12
+		i++
+		i = encodeVarintExtAuthz(dAtA, i, uint64(m.CheckSettings.Size()))
+		n11, err := m.CheckSettings.MarshalTo(dAtA[i:])
+		if err != nil {
+			return 0, err
+		}
+		i += n11
+	}
+	return i, nil
+}
+func (m *CheckSettings) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalTo(dAtA)
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *CheckSettings) MarshalTo(dAtA []byte) (int, error) {
+	var i int
+	_ = i
+	var l int
+	_ = l
+	if len(m.ContextExtensions) > 0 {
+		for k, _ := range m.ContextExtensions {
+			dAtA[i] = 0xa
+			i++
+			v := m.ContextExtensions[k]
+			mapSize := 1 + len(k) + sovExtAuthz(uint64(len(k))) + 1 + len(v) + sovExtAuthz(uint64(len(v)))
+			i = encodeVarintExtAuthz(dAtA, i, uint64(mapSize))
+			dAtA[i] = 0xa
+			i++
+			i = encodeVarintExtAuthz(dAtA, i, uint64(len(k)))
+			i += copy(dAtA[i:], k)
+			dAtA[i] = 0x12
+			i++
+			i = encodeVarintExtAuthz(dAtA, i, uint64(len(v)))
+			i += copy(dAtA[i:], v)
 		}
 	}
 	if m.XXX_unrecognized != nil {
@@ -470,6 +958,9 @@ func encodeVarintExtAuthz(dAtA []byte, offset int, v uint64) int {
 	return offset + 1
 }
 func (m *ExtAuthz) Size() (n int) {
+	if m == nil {
+		return 0
+	}
 	var l int
 	_ = l
 	if m.Services != nil {
@@ -485,6 +976,9 @@ func (m *ExtAuthz) Size() (n int) {
 }
 
 func (m *ExtAuthz_GrpcService) Size() (n int) {
+	if m == nil {
+		return 0
+	}
 	var l int
 	_ = l
 	if m.GrpcService != nil {
@@ -494,6 +988,9 @@ func (m *ExtAuthz_GrpcService) Size() (n int) {
 	return n
 }
 func (m *ExtAuthz_HttpService) Size() (n int) {
+	if m == nil {
+		return 0
+	}
 	var l int
 	_ = l
 	if m.HttpService != nil {
@@ -503,6 +1000,9 @@ func (m *ExtAuthz_HttpService) Size() (n int) {
 	return n
 }
 func (m *HttpService) Size() (n int) {
+	if m == nil {
+		return 0
+	}
 	var l int
 	_ = l
 	if m.ServerUri != nil {
@@ -513,22 +1013,110 @@ func (m *HttpService) Size() (n int) {
 	if l > 0 {
 		n += 1 + l + sovExtAuthz(uint64(l))
 	}
-	if len(m.AllowedAuthorizationHeaders) > 0 {
-		for _, s := range m.AllowedAuthorizationHeaders {
-			l = len(s)
-			n += 1 + l + sovExtAuthz(uint64(l))
-		}
+	if m.AuthorizationRequest != nil {
+		l = m.AuthorizationRequest.Size()
+		n += 1 + l + sovExtAuthz(uint64(l))
 	}
-	if len(m.AllowedRequestHeaders) > 0 {
-		for _, s := range m.AllowedRequestHeaders {
-			l = len(s)
-			n += 1 + l + sovExtAuthz(uint64(l))
-		}
+	if m.AuthorizationResponse != nil {
+		l = m.AuthorizationResponse.Size()
+		n += 1 + l + sovExtAuthz(uint64(l))
 	}
-	if len(m.AuthorizationHeadersToAdd) > 0 {
-		for _, e := range m.AuthorizationHeadersToAdd {
+	if m.XXX_unrecognized != nil {
+		n += len(m.XXX_unrecognized)
+	}
+	return n
+}
+
+func (m *AuthorizationRequest) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.AllowedHeaders != nil {
+		l = m.AllowedHeaders.Size()
+		n += 1 + l + sovExtAuthz(uint64(l))
+	}
+	if len(m.HeadersToAdd) > 0 {
+		for _, e := range m.HeadersToAdd {
 			l = e.Size()
 			n += 1 + l + sovExtAuthz(uint64(l))
+		}
+	}
+	if m.XXX_unrecognized != nil {
+		n += len(m.XXX_unrecognized)
+	}
+	return n
+}
+
+func (m *AuthorizationResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.AllowedUpstreamHeaders != nil {
+		l = m.AllowedUpstreamHeaders.Size()
+		n += 1 + l + sovExtAuthz(uint64(l))
+	}
+	if m.AllowedClientHeaders != nil {
+		l = m.AllowedClientHeaders.Size()
+		n += 1 + l + sovExtAuthz(uint64(l))
+	}
+	if m.XXX_unrecognized != nil {
+		n += len(m.XXX_unrecognized)
+	}
+	return n
+}
+
+func (m *ExtAuthzPerRoute) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Override != nil {
+		n += m.Override.Size()
+	}
+	if m.XXX_unrecognized != nil {
+		n += len(m.XXX_unrecognized)
+	}
+	return n
+}
+
+func (m *ExtAuthzPerRoute_Disabled) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	n += 2
+	return n
+}
+func (m *ExtAuthzPerRoute_CheckSettings) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.CheckSettings != nil {
+		l = m.CheckSettings.Size()
+		n += 1 + l + sovExtAuthz(uint64(l))
+	}
+	return n
+}
+func (m *CheckSettings) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if len(m.ContextExtensions) > 0 {
+		for k, v := range m.ContextExtensions {
+			_ = k
+			_ = v
+			mapEntrySize := 1 + len(k) + sovExtAuthz(uint64(len(k))) + 1 + len(v) + sovExtAuthz(uint64(len(v)))
+			n += mapEntrySize + 1 + sovExtAuthz(uint64(mapEntrySize))
 		}
 	}
 	if m.XXX_unrecognized != nil {
@@ -776,67 +1364,9 @@ func (m *HttpService) Unmarshal(dAtA []byte) error {
 			}
 			m.PathPrefix = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
-		case 4:
+		case 7:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field AllowedAuthorizationHeaders", wireType)
-			}
-			var stringLen uint64
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowExtAuthz
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				stringLen |= (uint64(b) & 0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			intStringLen := int(stringLen)
-			if intStringLen < 0 {
-				return ErrInvalidLengthExtAuthz
-			}
-			postIndex := iNdEx + intStringLen
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.AllowedAuthorizationHeaders = append(m.AllowedAuthorizationHeaders, string(dAtA[iNdEx:postIndex]))
-			iNdEx = postIndex
-		case 5:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field AllowedRequestHeaders", wireType)
-			}
-			var stringLen uint64
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowExtAuthz
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				stringLen |= (uint64(b) & 0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			intStringLen := int(stringLen)
-			if intStringLen < 0 {
-				return ErrInvalidLengthExtAuthz
-			}
-			postIndex := iNdEx + intStringLen
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.AllowedRequestHeaders = append(m.AllowedRequestHeaders, string(dAtA[iNdEx:postIndex]))
-			iNdEx = postIndex
-		case 6:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field AuthorizationHeadersToAdd", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field AuthorizationRequest", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -860,10 +1390,550 @@ func (m *HttpService) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.AuthorizationHeadersToAdd = append(m.AuthorizationHeadersToAdd, &core.HeaderValue{})
-			if err := m.AuthorizationHeadersToAdd[len(m.AuthorizationHeadersToAdd)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+			if m.AuthorizationRequest == nil {
+				m.AuthorizationRequest = &AuthorizationRequest{}
+			}
+			if err := m.AuthorizationRequest.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
+			iNdEx = postIndex
+		case 8:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field AuthorizationResponse", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowExtAuthz
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			postIndex := iNdEx + msglen
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.AuthorizationResponse == nil {
+				m.AuthorizationResponse = &AuthorizationResponse{}
+			}
+			if err := m.AuthorizationResponse.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipExtAuthz(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.XXX_unrecognized = append(m.XXX_unrecognized, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *AuthorizationRequest) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowExtAuthz
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= (uint64(b) & 0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: AuthorizationRequest: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: AuthorizationRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field AllowedHeaders", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowExtAuthz
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			postIndex := iNdEx + msglen
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.AllowedHeaders == nil {
+				m.AllowedHeaders = &matcher.ListStringMatcher{}
+			}
+			if err := m.AllowedHeaders.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field HeadersToAdd", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowExtAuthz
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			postIndex := iNdEx + msglen
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.HeadersToAdd = append(m.HeadersToAdd, &core.HeaderValue{})
+			if err := m.HeadersToAdd[len(m.HeadersToAdd)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipExtAuthz(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.XXX_unrecognized = append(m.XXX_unrecognized, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *AuthorizationResponse) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowExtAuthz
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= (uint64(b) & 0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: AuthorizationResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: AuthorizationResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field AllowedUpstreamHeaders", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowExtAuthz
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			postIndex := iNdEx + msglen
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.AllowedUpstreamHeaders == nil {
+				m.AllowedUpstreamHeaders = &matcher.ListStringMatcher{}
+			}
+			if err := m.AllowedUpstreamHeaders.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field AllowedClientHeaders", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowExtAuthz
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			postIndex := iNdEx + msglen
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.AllowedClientHeaders == nil {
+				m.AllowedClientHeaders = &matcher.ListStringMatcher{}
+			}
+			if err := m.AllowedClientHeaders.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipExtAuthz(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.XXX_unrecognized = append(m.XXX_unrecognized, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *ExtAuthzPerRoute) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowExtAuthz
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= (uint64(b) & 0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: ExtAuthzPerRoute: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: ExtAuthzPerRoute: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Disabled", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowExtAuthz
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			b := bool(v != 0)
+			m.Override = &ExtAuthzPerRoute_Disabled{b}
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CheckSettings", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowExtAuthz
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			postIndex := iNdEx + msglen
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &CheckSettings{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Override = &ExtAuthzPerRoute_CheckSettings{v}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipExtAuthz(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.XXX_unrecognized = append(m.XXX_unrecognized, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *CheckSettings) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowExtAuthz
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= (uint64(b) & 0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: CheckSettings: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: CheckSettings: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ContextExtensions", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowExtAuthz
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthExtAuthz
+			}
+			postIndex := iNdEx + msglen
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.ContextExtensions == nil {
+				m.ContextExtensions = make(map[string]string)
+			}
+			var mapkey string
+			var mapvalue string
+			for iNdEx < postIndex {
+				entryPreIndex := iNdEx
+				var wire uint64
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowExtAuthz
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					wire |= (uint64(b) & 0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				fieldNum := int32(wire >> 3)
+				if fieldNum == 1 {
+					var stringLenmapkey uint64
+					for shift := uint(0); ; shift += 7 {
+						if shift >= 64 {
+							return ErrIntOverflowExtAuthz
+						}
+						if iNdEx >= l {
+							return io.ErrUnexpectedEOF
+						}
+						b := dAtA[iNdEx]
+						iNdEx++
+						stringLenmapkey |= (uint64(b) & 0x7F) << shift
+						if b < 0x80 {
+							break
+						}
+					}
+					intStringLenmapkey := int(stringLenmapkey)
+					if intStringLenmapkey < 0 {
+						return ErrInvalidLengthExtAuthz
+					}
+					postStringIndexmapkey := iNdEx + intStringLenmapkey
+					if postStringIndexmapkey > l {
+						return io.ErrUnexpectedEOF
+					}
+					mapkey = string(dAtA[iNdEx:postStringIndexmapkey])
+					iNdEx = postStringIndexmapkey
+				} else if fieldNum == 2 {
+					var stringLenmapvalue uint64
+					for shift := uint(0); ; shift += 7 {
+						if shift >= 64 {
+							return ErrIntOverflowExtAuthz
+						}
+						if iNdEx >= l {
+							return io.ErrUnexpectedEOF
+						}
+						b := dAtA[iNdEx]
+						iNdEx++
+						stringLenmapvalue |= (uint64(b) & 0x7F) << shift
+						if b < 0x80 {
+							break
+						}
+					}
+					intStringLenmapvalue := int(stringLenmapvalue)
+					if intStringLenmapvalue < 0 {
+						return ErrInvalidLengthExtAuthz
+					}
+					postStringIndexmapvalue := iNdEx + intStringLenmapvalue
+					if postStringIndexmapvalue > l {
+						return io.ErrUnexpectedEOF
+					}
+					mapvalue = string(dAtA[iNdEx:postStringIndexmapvalue])
+					iNdEx = postStringIndexmapvalue
+				} else {
+					iNdEx = entryPreIndex
+					skippy, err := skipExtAuthz(dAtA[iNdEx:])
+					if err != nil {
+						return err
+					}
+					if skippy < 0 {
+						return ErrInvalidLengthExtAuthz
+					}
+					if (iNdEx + skippy) > postIndex {
+						return io.ErrUnexpectedEOF
+					}
+					iNdEx += skippy
+				}
+			}
+			m.ContextExtensions[mapkey] = mapvalue
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -993,37 +2063,58 @@ var (
 )
 
 func init() {
-	proto.RegisterFile("envoy/config/filter/http/ext_authz/v2alpha/ext_authz.proto", fileDescriptor_ext_authz_6e713e13278d18e2)
+	proto.RegisterFile("envoy/config/filter/http/ext_authz/v2alpha/ext_authz.proto", fileDescriptor_ext_authz_7f90224561a9d52f)
 }
 
-var fileDescriptor_ext_authz_6e713e13278d18e2 = []byte{
-	// 441 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x8c, 0x92, 0x41, 0x8b, 0x13, 0x31,
-	0x14, 0xc7, 0x9d, 0x6d, 0x5d, 0xdb, 0x74, 0x0f, 0x4b, 0x60, 0xb1, 0xd6, 0xb5, 0x0e, 0x8b, 0x87,
-	0x22, 0x92, 0x40, 0x05, 0x45, 0x6f, 0xad, 0x88, 0x45, 0x10, 0x64, 0x74, 0x3d, 0x88, 0x10, 0xb2,
-	0x93, 0xd7, 0x4e, 0x60, 0x6c, 0x62, 0x26, 0x33, 0xd6, 0xfd, 0x84, 0x1e, 0x3c, 0xf8, 0x11, 0xa4,
-	0x17, 0xbf, 0x86, 0x24, 0x99, 0x3a, 0x03, 0xad, 0xe0, 0x31, 0xef, 0xfd, 0xfe, 0xff, 0xff, 0x7b,
-	0x49, 0xd0, 0x73, 0x58, 0x57, 0xea, 0x1b, 0x4d, 0xd5, 0x7a, 0x29, 0x57, 0x74, 0x29, 0x73, 0x0b,
-	0x86, 0x66, 0xd6, 0x6a, 0x0a, 0x1b, 0xcb, 0x78, 0x69, 0xb3, 0x6b, 0x5a, 0x4d, 0x79, 0xae, 0x33,
-	0xde, 0x54, 0x88, 0x36, 0xca, 0x2a, 0xfc, 0xd0, 0x6b, 0x49, 0xd0, 0x92, 0xa0, 0x25, 0x4e, 0x4b,
-	0x1a, 0xb2, 0xd6, 0x8e, 0xce, 0x43, 0x0e, 0xd7, 0x92, 0x56, 0x53, 0x9a, 0x2a, 0x03, 0xf4, 0x8a,
-	0x17, 0x10, 0x9c, 0x46, 0x0f, 0xf6, 0xbb, 0x2b, 0xa3, 0x53, 0x56, 0x80, 0xa9, 0x64, 0xba, 0xa3,
-	0xe2, 0x7d, 0xca, 0xa5, 0xb1, 0xd2, 0xc8, 0x40, 0x5c, 0xfc, 0x8e, 0x50, 0xef, 0xe5, 0xc6, 0xce,
-	0x5c, 0x34, 0x7e, 0x81, 0x4e, 0xda, 0x26, 0xc3, 0x28, 0x8e, 0x26, 0x83, 0xe9, 0x98, 0x84, 0xa9,
-	0xb9, 0x96, 0xa4, 0x9a, 0x12, 0xe7, 0x42, 0x5e, 0x19, 0x9d, 0xbe, 0x0b, 0xd4, 0xe2, 0x46, 0x32,
-	0x58, 0x35, 0x47, 0xfc, 0x08, 0xe1, 0x25, 0x97, 0x79, 0x69, 0x80, 0x7d, 0x56, 0x02, 0x18, 0xcf,
-	0x73, 0xf5, 0x75, 0x78, 0x14, 0x47, 0x93, 0x5e, 0x72, 0x5a, 0x77, 0xde, 0x28, 0x01, 0x33, 0x57,
-	0xc7, 0x9f, 0xd0, 0x89, 0x9f, 0x68, 0x17, 0xd9, 0xf1, 0x91, 0x4f, 0xc9, 0xff, 0x5f, 0x14, 0x59,
-	0x58, 0xab, 0x5b, 0xb3, 0x64, 0xcd, 0x71, 0x8e, 0x50, 0xaf, 0x36, 0x2e, 0x2e, 0x7e, 0x1c, 0xa1,
-	0x41, 0x0b, 0xc5, 0xcf, 0x10, 0x72, 0x3d, 0x30, 0xee, 0x36, 0xea, 0x55, 0x47, 0x07, 0x56, 0x75,
-	0x9a, 0x4b, 0x23, 0x93, 0x7e, 0xa0, 0x2f, 0x8d, 0xc4, 0xf7, 0xd1, 0x40, 0x73, 0x9b, 0x31, 0x6d,
-	0x60, 0x29, 0x37, 0x7e, 0xb7, 0x7e, 0x82, 0x5c, 0xe9, 0xad, 0xaf, 0xe0, 0x39, 0xba, 0xe7, 0xd7,
-	0x06, 0xe1, 0x67, 0x55, 0x46, 0x5e, 0x73, 0x2b, 0xd5, 0x9a, 0x65, 0xc0, 0x05, 0x98, 0x62, 0xd8,
-	0x8d, 0x3b, 0x93, 0x7e, 0x72, 0xb7, 0x86, 0x66, 0x6d, 0x66, 0x11, 0x10, 0xfc, 0x04, 0xdd, 0xde,
-	0x79, 0x18, 0xf8, 0x52, 0x42, 0x61, 0xff, 0xaa, 0x6f, 0x7a, 0xf5, 0x59, 0xdd, 0x4e, 0x42, 0x77,
-	0xa7, 0x63, 0xe8, 0xfc, 0x60, 0x26, 0xb3, 0x8a, 0x71, 0x21, 0x86, 0xc7, 0x71, 0xe7, 0x1f, 0x8f,
-	0x1a, 0x1c, 0x3e, 0xf0, 0xbc, 0x84, 0xe4, 0x0e, 0x3f, 0x30, 0xd3, 0x7b, 0x35, 0x13, 0xe2, 0x75,
-	0xb7, 0xd7, 0x39, 0xed, 0xce, 0xcf, 0xbe, 0x6f, 0xc7, 0xd1, 0xcf, 0xed, 0x38, 0xfa, 0xb5, 0x1d,
-	0x47, 0x1f, 0x6f, 0xd5, 0x8f, 0x71, 0x75, 0xec, 0xbf, 0xd5, 0xe3, 0x3f, 0x01, 0x00, 0x00, 0xff,
-	0xff, 0x5d, 0x36, 0xe2, 0x3a, 0x26, 0x03, 0x00, 0x00,
+var fileDescriptor_ext_authz_7f90224561a9d52f = []byte{
+	// 776 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xa4, 0x54, 0x4f, 0x8f, 0xdb, 0x44,
+	0x14, 0xef, 0xe4, 0xcf, 0xae, 0x77, 0x76, 0xbb, 0xb8, 0xa3, 0xec, 0x12, 0x45, 0x28, 0x8d, 0x22,
+	0x10, 0x15, 0x42, 0xb6, 0x14, 0x0e, 0xb4, 0x3d, 0x91, 0xa4, 0x2b, 0xa2, 0x88, 0xa2, 0xe0, 0x65,
+	0x39, 0x00, 0x92, 0x35, 0x6b, 0xbf, 0xc4, 0x43, 0xbd, 0x1e, 0x33, 0x1e, 0x9b, 0xa4, 0x17, 0xee,
+	0x7c, 0x16, 0x3e, 0x00, 0xe2, 0x80, 0x7a, 0xe4, 0xc8, 0x05, 0xce, 0x68, 0x2f, 0xa8, 0x57, 0x3e,
+	0x01, 0x1a, 0xcf, 0x78, 0x93, 0xb6, 0x41, 0x22, 0xe5, 0xe6, 0x79, 0xef, 0xf7, 0xe7, 0xfd, 0x66,
+	0x5e, 0x82, 0x1f, 0x42, 0x52, 0xf0, 0x95, 0x1b, 0xf0, 0x64, 0xce, 0x16, 0xee, 0x9c, 0xc5, 0x12,
+	0x84, 0x1b, 0x49, 0x99, 0xba, 0xb0, 0x94, 0x3e, 0xcd, 0x65, 0xf4, 0xd4, 0x2d, 0x06, 0x34, 0x4e,
+	0x23, 0xba, 0xae, 0x38, 0xa9, 0xe0, 0x92, 0x93, 0xf7, 0x4a, 0xae, 0xa3, 0xb9, 0x8e, 0xe6, 0x3a,
+	0x8a, 0xeb, 0xac, 0x91, 0x86, 0xdb, 0x79, 0x4b, 0xfb, 0xd0, 0x94, 0xb9, 0xc5, 0xc0, 0x0d, 0xb8,
+	0x00, 0xf7, 0x92, 0x66, 0xa0, 0x95, 0x3a, 0x6f, 0xbf, 0xda, 0x5d, 0x88, 0x34, 0xf0, 0x33, 0x10,
+	0x05, 0x0b, 0x2a, 0x54, 0xef, 0x55, 0x94, 0x72, 0xf3, 0x73, 0xc1, 0x0c, 0xe2, 0xae, 0x46, 0xc8,
+	0x55, 0x0a, 0xee, 0x15, 0x95, 0x41, 0x04, 0xc2, 0xcd, 0xa4, 0x60, 0xc9, 0xc2, 0x00, 0xde, 0x2c,
+	0x68, 0xcc, 0x42, 0x2a, 0xc1, 0xad, 0x3e, 0x74, 0xa3, 0xff, 0x17, 0xc2, 0xd6, 0xd9, 0x52, 0x0e,
+	0xd5, 0xd0, 0x64, 0x8c, 0x8f, 0x36, 0xed, 0xdb, 0xa8, 0x87, 0xee, 0x1d, 0x0e, 0xba, 0x8e, 0xce,
+	0x4b, 0x53, 0xe6, 0x14, 0x03, 0x47, 0xf9, 0x3b, 0x1f, 0x8b, 0x34, 0x38, 0xd7, 0xa8, 0xc9, 0x2d,
+	0xef, 0x70, 0xb1, 0x3e, 0x92, 0xf7, 0x31, 0x99, 0x53, 0x16, 0xe7, 0x02, 0xfc, 0x2b, 0x1e, 0x82,
+	0x4f, 0xe3, 0x98, 0x7f, 0xd7, 0xae, 0xf5, 0xd0, 0x3d, 0xcb, 0xb3, 0x4d, 0xe7, 0x31, 0x0f, 0x61,
+	0xa8, 0xea, 0xe4, 0x6b, 0x7c, 0x54, 0x66, 0xa9, 0x2c, 0xeb, 0xa5, 0xe5, 0x87, 0xce, 0x7f, 0xbf,
+	0x62, 0x67, 0x22, 0x65, 0xba, 0x31, 0x4b, 0xb4, 0x3e, 0x8e, 0x30, 0xb6, 0x8c, 0x70, 0xd6, 0xff,
+	0xbb, 0x86, 0x0f, 0x37, 0xa0, 0xe4, 0x01, 0xc6, 0xaa, 0x07, 0x42, 0xdd, 0xa3, 0x89, 0xda, 0xd9,
+	0x12, 0x55, 0x71, 0x2e, 0x04, 0xf3, 0x0e, 0x34, 0xfa, 0x42, 0x30, 0x72, 0x17, 0x1f, 0xa6, 0x54,
+	0x46, 0x7e, 0x2a, 0x60, 0xce, 0x96, 0x65, 0xb6, 0x03, 0x0f, 0xab, 0xd2, 0xac, 0xac, 0x90, 0x1c,
+	0x9f, 0xa8, 0x19, 0xb9, 0x60, 0x4f, 0xa9, 0x64, 0x3c, 0xf1, 0x05, 0x7c, 0x9b, 0x43, 0x26, 0xdb,
+	0xfb, 0xa5, 0xcd, 0x47, 0xbb, 0xc4, 0x1b, 0x6e, 0x0a, 0x79, 0x5a, 0xc7, 0x6b, 0xd1, 0x2d, 0x55,
+	0xb2, 0xc4, 0xa7, 0x2f, 0xdb, 0x66, 0x29, 0x4f, 0x32, 0x68, 0x5b, 0xa5, 0xef, 0xf0, 0x7f, 0xf8,
+	0x6a, 0x21, 0xef, 0x84, 0x6e, 0x2b, 0x4f, 0x1b, 0x56, 0xdd, 0x6e, 0x4c, 0x1b, 0x56, 0xc3, 0x6e,
+	0x4e, 0x1b, 0x56, 0xd3, 0xde, 0x9b, 0x36, 0xac, 0x3d, 0x7b, 0xbf, 0xff, 0x23, 0xc2, 0xad, 0x6d,
+	0x01, 0xc8, 0xa7, 0xf8, 0x8d, 0x72, 0x31, 0x20, 0xf4, 0x23, 0xa0, 0x21, 0x88, 0xcc, 0x3c, 0xc1,
+	0x3b, 0x66, 0x46, 0xb5, 0xcb, 0x8e, 0xd9, 0x65, 0xe7, 0x13, 0x96, 0xc9, 0xf3, 0x72, 0x9f, 0x1f,
+	0xeb, 0x8a, 0x77, 0x6c, 0xd8, 0x13, 0x4d, 0x26, 0x8f, 0xf0, 0xb1, 0xd1, 0xf1, 0x25, 0xf7, 0x69,
+	0x18, 0xb6, 0x6b, 0xbd, 0xfa, 0xbf, 0x2c, 0xaf, 0xe6, 0x7c, 0x41, 0xe3, 0x1c, 0xbc, 0x23, 0xc3,
+	0xfa, 0x9c, 0x0f, 0xc3, 0xb0, 0xff, 0x3b, 0xc2, 0x27, 0x5b, 0x73, 0x13, 0x1f, 0xb7, 0xab, 0x79,
+	0xf3, 0x34, 0x93, 0x02, 0xe8, 0xd5, 0xeb, 0x0d, 0x7e, 0x6a, 0x64, 0x2e, 0x8c, 0x4a, 0x15, 0xe0,
+	0x2b, 0x5c, 0x75, 0xfc, 0x20, 0x66, 0x90, 0xc8, 0x1b, 0xf9, 0xda, 0x2e, 0xf2, 0x2d, 0x23, 0x32,
+	0x2e, 0x35, 0x8c, 0x78, 0xff, 0x17, 0x84, 0xed, 0xea, 0x57, 0x3e, 0x03, 0xe1, 0xf1, 0x5c, 0x02,
+	0x79, 0x17, 0x5b, 0x21, 0xcb, 0xe8, 0x65, 0x0c, 0x61, 0x19, 0xc1, 0x1a, 0x1d, 0xfc, 0xfc, 0xfc,
+	0x59, 0xbd, 0xf1, 0x4d, 0xcd, 0x42, 0x93, 0x5b, 0xde, 0x4d, 0x93, 0x24, 0xf8, 0x38, 0x88, 0x20,
+	0x78, 0xe2, 0x67, 0x20, 0x25, 0x4b, 0x16, 0xd5, 0x48, 0x0f, 0x76, 0x59, 0xa7, 0xb1, 0x52, 0x38,
+	0x37, 0x02, 0x23, 0xac, 0x9c, 0x9a, 0x3f, 0xa0, 0x9a, 0xad, 0xac, 0x6e, 0x07, 0x2f, 0x34, 0xef,
+	0x60, 0x8b, 0x17, 0x20, 0x04, 0x0b, 0x81, 0x34, 0x7f, 0x7a, 0xfe, 0xac, 0x8e, 0xfa, 0x7f, 0x20,
+	0x7c, 0xfb, 0x05, 0x05, 0xf2, 0x3d, 0x26, 0x01, 0x4f, 0xa4, 0x32, 0x82, 0xa5, 0x84, 0x24, 0x63,
+	0x3c, 0x51, 0x4f, 0xa1, 0x1e, 0x7d, 0xf6, 0xda, 0x83, 0x39, 0x63, 0xad, 0x79, 0x76, 0x23, 0x79,
+	0x96, 0x48, 0xb1, 0xf2, 0xee, 0x04, 0x2f, 0xd7, 0x3b, 0x8f, 0xf0, 0xe9, 0x76, 0x30, 0xb1, 0x71,
+	0xfd, 0x09, 0xac, 0xca, 0x3b, 0x3d, 0xf0, 0xd4, 0x27, 0x69, 0xe1, 0x66, 0xa1, 0xd6, 0xcd, 0xfc,
+	0x55, 0xe8, 0xc3, 0xc3, 0xda, 0x7d, 0x34, 0xfa, 0xec, 0xd7, 0xeb, 0x2e, 0xfa, 0xed, 0xba, 0x8b,
+	0xfe, 0xbc, 0xee, 0x22, 0x7c, 0x9f, 0x71, 0x3d, 0x7a, 0x2a, 0xf8, 0x72, 0xb5, 0x43, 0x8a, 0x19,
+	0xfa, 0x72, 0xdf, 0x7c, 0x5e, 0xee, 0x95, 0xff, 0xec, 0x1f, 0xfc, 0x13, 0x00, 0x00, 0xff, 0xff,
+	0xad, 0xf7, 0x02, 0xb5, 0xe3, 0x06, 0x00, 0x00,
 }

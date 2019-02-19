@@ -24,7 +24,7 @@ import (
 
 	messagediff "gopkg.in/d4l3k/messagediff.v1"
 	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -42,7 +42,6 @@ import (
 const (
 	testSecretName      = "testSecretName"
 	testSecretNameSpace = "istio-system"
-	maxTestSleep        = 25
 )
 
 type fakeK8sBuilder struct {
@@ -122,6 +121,44 @@ func TestBuilder_ControllerCache(t *testing.T) {
 	if len(b.controllers) != 1 {
 		t.Errorf("Got %v controllers, want 1", len(b.controllers))
 	}
+}
+
+// tests closing and rebuilding a handler
+func TestHandler_Close(t *testing.T) {
+	b := newFakeBuilder()
+
+	handler, err := b.Build(context.Background(), test.NewEnv(t))
+	if err != nil {
+		t.Fatalf("error in builder: %v", err)
+	}
+
+	b.Lock()
+	if got, want := len(b.controllers), 1; got != want {
+		t.Errorf("Got %d controllers, want %d", got, want)
+	}
+	b.Unlock()
+
+	err = handler.Close()
+	if err != nil {
+		t.Fatalf("Close() returned unexpected error: %v", err)
+	}
+
+	b.Lock()
+	if got, want := len(b.controllers), 0; got != want {
+		t.Errorf("Got %d controllers, want %d", got, want)
+	}
+	b.Unlock()
+
+	_, err = b.Build(context.Background(), test.NewEnv(t))
+	if err != nil {
+		t.Fatalf("error in builder: %v", err)
+	}
+
+	b.Lock()
+	if got, want := len(b.controllers), 1; got != want {
+		t.Errorf("Got %d controllers, want %d", got, want)
+	}
+	b.Unlock()
 }
 
 func TestBuilder_BuildAttributesGeneratorWithEnvVar(t *testing.T) {

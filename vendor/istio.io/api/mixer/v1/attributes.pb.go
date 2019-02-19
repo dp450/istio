@@ -6,9 +6,7 @@
 
 	It is generated from these files:
 		mixer/v1/attributes.proto
-		mixer/v1/check.proto
-		mixer/v1/report.proto
-		mixer/v1/service.proto
+		mixer/v1/mixer.proto
 
 	It has these top-level messages:
 		Attributes
@@ -63,7 +61,7 @@ const _ = proto.GoGoProtoPackageIsVersion2 // please upgrade the proto package
 // of information such as the error code of an API request, the latency of an API request, or the
 // original IP address of a TCP connection. For example:
 //
-// ```
+// ```yaml
 // request.path: xyz/abc
 // request.size: 234
 // request.time: 12:34:56.789 04/17/2017

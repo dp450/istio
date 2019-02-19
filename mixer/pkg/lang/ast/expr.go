@@ -87,6 +87,8 @@ type Expression struct {
 type AttributeDescriptorFinder interface {
 	// GetAttribute finds attribute descriptor in the vocabulary. returns nil if not found.
 	GetAttribute(name string) *cfgpb.AttributeManifest_AttributeInfo
+	// Attributes exposes the internal attribute manifest
+	Attributes() map[string]*cfgpb.AttributeManifest_AttributeInfo
 }
 
 // EvalType Function an expression using fMap and attribute vocabulary. Returns the type that this expression evaluates to.
@@ -369,7 +371,7 @@ func process(ex ast.Expr, tgt *Expression) (err error) {
 
 	case *ast.IndexExpr:
 		// accessing a map
-		// request.header["abc"]
+		// request.headers["abc"]
 		tgt.Fn = &Function{Name: tMap[token.LBRACK]}
 		if err = processFunc(tgt.Fn, []ast.Expr{v.X, v.Index}); err != nil {
 			return

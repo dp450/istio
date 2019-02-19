@@ -35,9 +35,15 @@ func TestServiceEntry(t *testing.T) {
 			shouldBeReachable: true,
 		},
 		{
-			name:              "UNREACHABLE_bing.com_over_google_80",
+			name:              "REACHABLE_www.google.com_over_google_443",
 			config:            "testdata/networking/v1alpha3/service-entry-google.yaml",
-			url:               "http://bing.com",
+			url:               "https://www.google.com",
+			shouldBeReachable: true,
+		},
+		{
+			name:              "UNREACHABLE_bing.com_over_google_443",
+			config:            "testdata/networking/v1alpha3/service-entry-google.yaml",
+			url:               "https://bing.com",
 			shouldBeReachable: false,
 		},
 		{
@@ -124,7 +130,7 @@ func TestServiceEntry(t *testing.T) {
 			for cluster := range tc.Kube.Clusters {
 				// Make the requests and verify the reachability
 				for _, src := range []string{"a"} {
-					runRetriableTest(t, cluster, "from_"+src, 3, func() error {
+					runRetriableTest(t, "from_"+src, 3, func() error {
 						resp := ClientRequest(cluster, src, cs.url, 1, "")
 						reachable := resp.IsHTTPOk()
 						if reachable && !cs.shouldBeReachable {

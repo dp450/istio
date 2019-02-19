@@ -21,7 +21,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -35,7 +35,7 @@ type (
 	cacheController interface {
 		Run(<-chan struct{})
 		Pod(string) (*v1.Pod, bool)
-		Workload(*v1.Pod) (workload, bool)
+		Workload(*v1.Pod) workload
 		HasSynced() bool
 		StopControlChannel()
 	}
@@ -132,14 +132,14 @@ func key(namespace, name string) string {
 	return namespace + "/" + name
 }
 
-func (c *controllerImpl) Workload(pod *v1.Pod) (workload, bool) {
+func (c *controllerImpl) Workload(pod *v1.Pod) workload {
 	wl := workload{name: pod.Name, namespace: pod.Namespace, selfLinkURL: pod.SelfLink}
 	if owner, found := c.rootController(&pod.ObjectMeta); found {
 		wl.name = owner.Name
 		wl.selfLinkURL = fmt.Sprintf("kubernetes://apis/%s/namespaces/%s/%ss/%s", owner.APIVersion, pod.Namespace, strings.ToLower(owner.Kind), owner.Name)
 	}
 	wl.uid = "istio://" + wl.namespace + "/workloads/" + wl.name
-	return wl, true
+	return wl
 }
 
 func (c *controllerImpl) rootController(obj *metav1.ObjectMeta) (metav1.OwnerReference, bool) {

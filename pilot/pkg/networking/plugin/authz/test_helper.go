@@ -53,7 +53,7 @@ func generateServiceBinding(subject, serviceRoleRef string, mode rbacproto.Enfor
 	}
 }
 
-// nolint:deadcode
+// nolint:deadcode,unparam
 func generatePermission(headerName, matchSpecifier string) *policy.Permission {
 	return &policy.Permission{
 		Rule: &policy.Permission_AndRules{
@@ -179,7 +179,7 @@ func generatePolicyWithHTTPMethodAndGroupClaim(methodName, claimName string) *po
 					Ids: []*policy.Principal{
 						{
 							Identifier: &policy.Principal_Metadata{
-								Metadata: generateMetadataListMatcher(
+								Metadata: generateMetadataListMatcher(authn.AuthnFilterName,
 									[]string{attrRequestClaims, "groups"}, claimName),
 							},
 						},

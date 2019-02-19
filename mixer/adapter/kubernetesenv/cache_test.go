@@ -17,7 +17,7 @@ package kubernetesenv
 import (
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
@@ -110,7 +110,7 @@ func TestClusterInfoCache_Workload_ReplicationController(t *testing.T) {
 				tt.Fatal("Failed to sync")
 			}
 			pod, _ := c.Pod(v.pod)
-			workload, _ := c.Workload(pod)
+			workload := c.Workload(pod)
 			if workload.name != v.workload {
 				tt.Errorf("GetWorkload() => (_, %s), wanted (_, %s)", workload.name, v.workload)
 			}

@@ -27,13 +27,13 @@ func TestEnvoyArgs(t *testing.T) {
 	config.ServiceCluster = "my-cluster"
 	config.Concurrency = 8
 
-	test := &envoy{config: config, node: "my-node", extraArgs: []string{"-l", "trace"}}
-	testProxy := NewProxy(config, "my-node", "trace", nil)
+	test := &envoy{config: config, node: "my-node", extraArgs: []string{"-l", "trace"}, nodeIPs: []string{"10.75.2.9", "192.168.11.18"}}
+	testProxy := NewProxy(config, "my-node", "trace", nil, []string{"10.75.2.9", "192.168.11.18"})
 	if !reflect.DeepEqual(testProxy, test) {
 		t.Errorf("unexpected struct got\n%v\nwant\n%v", testProxy, test)
 	}
 
-	got := test.args("test.json", 5)
+	got := test.args("test.json", 5, "testdata/bootstrap.json")
 	want := []string{
 		"-c", "test.json",
 		"--restart-epoch", "5",
@@ -44,6 +44,7 @@ func TestEnvoyArgs(t *testing.T) {
 		"--max-obj-name-len", fmt.Sprint(config.StatNameLength),
 		"--allow-unknown-fields",
 		"-l", "trace",
+		"--config-yaml", `{"key": "value"}`,
 		"--concurrency", "8",
 	}
 	if !reflect.DeepEqual(got, want) {

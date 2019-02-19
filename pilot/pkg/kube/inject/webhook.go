@@ -36,6 +36,7 @@ import (
 
 	meshconfig "istio.io/api/mesh/v1alpha1"
 	"istio.io/istio/pilot/cmd"
+	"istio.io/istio/pilot/cmd/pilot-agent/status"
 	"istio.io/istio/pkg/log"
 )
 
@@ -299,9 +300,27 @@ func removeImagePullSecrets(imagePullSecrets []corev1.LocalObjectReference, remo
 }
 
 func addContainer(target, added []corev1.Container, basePath string) (patch []rfc6902PatchOperation) {
+	saJwtSecretMountName := ""
+	var saJwtSecretMount corev1.VolumeMount
+	// find service account secret volume mount(/var/run/secrets/kubernetes.io/serviceaccount,
+	// https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/#service-account-automation) from app container
+	for _, add := range target {
+		for _, vmount := range add.VolumeMounts {
+			if vmount.MountPath == "/var/run/secrets/kubernetes.io/serviceaccount" {
+				saJwtSecretMountName = vmount.Name
+				saJwtSecretMount = vmount
+			}
+		}
+	}
 	first := len(target) == 0
 	var value interface{}
 	for _, add := range added {
+		if add.Name == "istio-proxy" && saJwtSecretMountName != "" {
+			// add service account secret volume mount(/var/run/secrets/kubernetes.io/serviceaccount,
+			// https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/#service-account-automation) to istio-proxy container,
+			// so that envoy could fetch/pass k8s sa jwt and pass to sds server, which will be used to request workload identity for the pod.
+			add.VolumeMounts = append(add.VolumeMounts, saJwtSecretMount)
+		}
 		value = add
 		path := basePath
 		if first {
@@ -316,6 +335,15 @@ func addContainer(target, added []corev1.Container, basePath string) (patch []rf
 			Value: value,
 		})
 	}
+	return patch
+}
+
+func addSecurityContext(target *corev1.PodSecurityContext, basePath string) (patch []rfc6902PatchOperation) {
+	patch = append(patch, rfc6902PatchOperation{
+		Op:    "add",
+		Path:  basePath,
+		Value: target,
+	})
 	return patch
 }
 
@@ -361,6 +389,15 @@ func addImagePullSecrets(target, added []corev1.LocalObjectReference, basePath s
 	return patch
 }
 
+func addPodDNSConfig(target *corev1.PodDNSConfig, basePath string) (patch []rfc6902PatchOperation) {
+	patch = append(patch, rfc6902PatchOperation{
+		Op:    "add",
+		Path:  basePath,
+		Value: target,
+	})
+	return patch
+}
+
 // escape JSON Pointer value per https://tools.ietf.org/html/rfc6901
 func escapeJSONPointerValue(in string) string {
 	step := strings.Replace(in, "~", "~0", -1)
@@ -403,12 +440,41 @@ func createPatch(pod *corev1.Pod, prevStatus *SidecarInjectionStatus, annotation
 	patch = append(patch, removeVolumes(pod.Spec.Volumes, prevStatus.Volumes, "/spec/volumes")...)
 	patch = append(patch, removeImagePullSecrets(pod.Spec.ImagePullSecrets, prevStatus.ImagePullSecrets, "/spec/imagePullSecrets")...)
 
+	rewrite := ShouldRewriteAppProbers(sic)
+	addAppProberCmd := func() {
+		if !rewrite {
+			return
+		}
+		sidecar := FindSidecar(sic.Containers)
+		if sidecar == nil {
+			log.Errorf("sidecar not found in the template, skip addAppProberCmd")
+			return
+		}
+		// We don't have to escape json encoding here when using golang libraries.
+		if prober := DumpAppProbers(&pod.Spec); prober != "" {
+			sidecar.Env = append(sidecar.Env, corev1.EnvVar{Name: status.KubeAppProberEnvName, Value: prober})
+		}
+	}
+	addAppProberCmd()
+
 	patch = append(patch, addContainer(pod.Spec.InitContainers, sic.InitContainers, "/spec/initContainers")...)
 	patch = append(patch, addContainer(pod.Spec.Containers, sic.Containers, "/spec/containers")...)
 	patch = append(patch, addVolume(pod.Spec.Volumes, sic.Volumes, "/spec/volumes")...)
 	patch = append(patch, addImagePullSecrets(pod.Spec.ImagePullSecrets, sic.ImagePullSecrets, "/spec/imagePullSecrets")...)
 
+	if sic.DNSConfig != nil {
+		patch = append(patch, addPodDNSConfig(sic.DNSConfig, "/spec/dnsConfig")...)
+	}
+
+	if pod.Spec.SecurityContext != nil {
+		patch = append(patch, addSecurityContext(pod.Spec.SecurityContext, "/spec/securityContext")...)
+	}
+
 	patch = append(patch, updateAnnotation(pod.Annotations, annotations)...)
+
+	if rewrite {
+		patch = append(patch, createProbeRewritePatch(&pod.Spec, sic)...)
+	}
 
 	return json.Marshal(patch)
 }
@@ -483,8 +549,19 @@ func (wh *Webhook) inject(ar *v1beta1.AdmissionReview) *v1beta1.AdmissionRespons
 		}
 	}
 
+	// due to bug https://github.com/kubernetes/kubernetes/issues/57923,
+	// k8s sa jwt token volume mount file is only accessible to root user, not istio-proxy(the user that istio proxy runs as).
+	// workaround by https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
+	if wh.meshConfig.EnableSdsTokenMount && wh.meshConfig.SdsUdsPath != "" {
+		var grp = int64(1337)
+		pod.Spec.SecurityContext = &corev1.PodSecurityContext{
+			FSGroup: &grp,
+		}
+	}
+
 	spec, status, err := injectionData(wh.sidecarConfig.Template, wh.sidecarTemplateVersion, &pod.ObjectMeta, &pod.Spec, &pod.ObjectMeta, wh.meshConfig.DefaultConfig, wh.meshConfig) // nolint: lll
 	if err != nil {
+		log.Infof("Injection data: err=%v spec=%v\n", err, status)
 		return toAdmissionResponse(err)
 	}
 
@@ -492,6 +569,8 @@ func (wh *Webhook) inject(ar *v1beta1.AdmissionReview) *v1beta1.AdmissionRespons
 
 	patchBytes, err := createPatch(&pod, injectionStatus(&pod), annotations, spec)
 	if err != nil {
+		log.Infof("AdmissionResponse: err=%v spec=%v\n", err, spec)
+
 		return toAdmissionResponse(err)
 	}
 

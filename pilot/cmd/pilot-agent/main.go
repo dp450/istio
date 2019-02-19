@@ -24,8 +24,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
+
+	"istio.io/istio/pkg/spiffe"
 
 	"github.com/gogo/protobuf/types"
 	"github.com/spf13/cobra"
@@ -39,18 +42,22 @@ import (
 	"istio.io/istio/pilot/pkg/serviceregistry"
 	"istio.io/istio/pkg/cmd"
 	"istio.io/istio/pkg/collateral"
+	"istio.io/istio/pkg/features/pilot"
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/version"
 )
 
 var (
-	role             model.Proxy
+	role             = &model.Proxy{}
+	proxyIP          string
 	registry         serviceregistry.ServiceRegistry
 	statusPort       uint16
 	applicationPorts []string
+	DNSDomain        string
 
 	// proxy config flags (named identically)
 	configPath               string
+	controlPlaneBootstrap    bool
 	binaryPath               string
 	serviceCluster           string
 	drainDuration            time.Duration
@@ -70,9 +77,9 @@ var (
 	concurrency              int
 	templateFile             string
 	disableInternalTelemetry bool
-	appReadinessProbeURL     string
-	livenessProbeURL         string
 	loggingOptions           = log.DefaultOptions()
+
+	wg sync.WaitGroup
 
 	rootCmd = &cobra.Command{
 		Use:          "pilot-agent",
@@ -90,7 +97,7 @@ var (
 				return err
 			}
 			log.Infof("Version %s", version.Info.String())
-			role.Type = model.Sidecar
+			role.Type = model.SidecarProxy
 			if len(args) > 0 {
 				role.Type = model.NodeType(args[0])
 				if !model.IsApplicationNodeType(role.Type) {
@@ -99,40 +106,39 @@ var (
 				}
 			}
 
-			// set values from registry platform
-			if len(role.IPAddress) == 0 {
-				if registry == serviceregistry.KubernetesRegistry {
-					role.IPAddress = os.Getenv("INSTANCE_IP")
-				} else {
-					if ipAddr, ok := proxy.GetPrivateIP(context.Background()); ok {
-						log.Infof("Obtained private IP %v", ipAddr)
-						role.IPAddress = ipAddr.String()
-					} else {
-						role.IPAddress = "127.0.0.1"
-					}
+			//Do we need to get IP from the command line or environment?
+			if len(proxyIP) != 0 {
+				role.IPAddresses = append(role.IPAddresses, proxyIP)
+			} else {
+				envIP := os.Getenv("INSTANCE_IP")
+				if len(envIP) > 0 {
+					role.IPAddresses = append(role.IPAddresses, envIP)
 				}
 			}
+
+			// Obtain all the IPs from the node
+			if ipAddr, ok := proxy.GetPrivateIPs(context.Background()); ok {
+				log.Infof("Obtained private IP %v", ipAddr)
+				role.IPAddresses = append(role.IPAddresses, ipAddr...)
+			}
+
+			// No IP addresses provided, append 127.0.0.1
+			if len(role.IPAddresses) == 0 {
+				role.IPAddresses = append(role.IPAddresses, "127.0.0.1")
+			}
+
 			if len(role.ID) == 0 {
 				if registry == serviceregistry.KubernetesRegistry {
 					role.ID = os.Getenv("POD_NAME") + "." + os.Getenv("POD_NAMESPACE")
 				} else if registry == serviceregistry.ConsulRegistry {
-					role.ID = role.IPAddress + ".service.consul"
+					role.ID = role.IPAddresses[0] + ".service.consul"
 				} else {
-					role.ID = role.IPAddress
-				}
-			}
-			pilotDomain := role.Domain
-			if len(role.Domain) == 0 {
-				if registry == serviceregistry.KubernetesRegistry {
-					role.Domain = os.Getenv("POD_NAMESPACE") + ".svc.cluster.local"
-					pilotDomain = "cluster.local"
-				} else if registry == serviceregistry.ConsulRegistry {
-					role.Domain = "service.consul"
-				} else {
-					role.Domain = ""
+					role.ID = role.IPAddresses[0]
 				}
 			}
 
+			spiffe.SetTrustDomain(spiffe.DetermineTrustDomain(role.TrustDomain, true))
+			role.TrustDomain = spiffe.GetTrustDomain()
 			log.Infof("Proxy role: %#v", role)
 
 			proxyConfig := model.DefaultProxyConfig()
@@ -151,11 +157,11 @@ var (
 			proxyConfig.Concurrency = int32(concurrency)
 
 			var pilotSAN []string
+			ns := ""
 			switch controlPlaneAuthPolicy {
 			case meshconfig.AuthenticationPolicy_NONE.String():
 				proxyConfig.ControlPlaneAuthPolicy = meshconfig.AuthenticationPolicy_NONE
 			case meshconfig.AuthenticationPolicy_MUTUAL_TLS.String():
-				var ns string
 				proxyConfig.ControlPlaneAuthPolicy = meshconfig.AuthenticationPolicy_MUTUAL_TLS
 				if registry == serviceregistry.KubernetesRegistry {
 					partDiscoveryAddress := strings.Split(discoveryAddress, ":")
@@ -178,8 +184,17 @@ var (
 						}
 					}
 				}
-				pilotSAN = envoy.GetPilotSAN(pilotDomain, ns)
 			}
+
+			// Parse the DNSDomain based upon service registry type into a registry specific domain.
+			DNSDomain = getDNSDomain(DNSDomain)
+
+			// role.ServiceNode() returns a string based upon this META which isn't set in the proxy-init.
+			role.DNSDomains = make([]string, 1)
+			role.DNSDomains[0] = DNSDomain
+
+			// Obtain the SAN to later create a Envoy proxy.
+			pilotSAN = getPilotSAN(DNSDomain, ns)
 
 			// resolve statsd address
 			if proxyConfig.StatsdUdpAddress != "" {
@@ -242,41 +257,50 @@ var (
 
 			log.Infof("Monitored certs: %#v", certs)
 
-			if templateFile != "" && proxyConfig.CustomConfigFile == "" {
-				opts := make(map[string]string)
-				opts["PodName"] = os.Getenv("POD_NAME")
-				opts["PodNamespace"] = os.Getenv("POD_NAMESPACE")
+			// TODO: change Mixer and Pilot to use standard template and deprecate this custom bootstrap parser
+			if controlPlaneBootstrap {
+				if templateFile != "" && proxyConfig.CustomConfigFile == "" {
+					opts := make(map[string]string)
+					opts["PodName"] = os.Getenv("POD_NAME")
+					opts["PodNamespace"] = os.Getenv("POD_NAMESPACE")
+					opts["MixerSubjectAltName"] = envoy.GetMixerSAN(opts["PodNamespace"])
 
-				// protobuf encoding of IP_ADDRESS type
-				opts["PodIP"] = base64.StdEncoding.EncodeToString(net.ParseIP(os.Getenv("INSTANCE_IP")))
+					// protobuf encoding of IP_ADDRESS type
+					opts["PodIP"] = base64.StdEncoding.EncodeToString(net.ParseIP(os.Getenv("INSTANCE_IP")))
 
-				if proxyConfig.ControlPlaneAuthPolicy == meshconfig.AuthenticationPolicy_MUTUAL_TLS {
-					opts["ControlPlaneAuth"] = "enable"
+					if proxyConfig.ControlPlaneAuthPolicy == meshconfig.AuthenticationPolicy_MUTUAL_TLS {
+						opts["ControlPlaneAuth"] = "enable"
+					}
+					if disableInternalTelemetry {
+						opts["DisableReportCalls"] = "true"
+					}
+					tmpl, err := template.ParseFiles(templateFile)
+					if err != nil {
+						return err
+					}
+					var buffer bytes.Buffer
+					err = tmpl.Execute(&buffer, opts)
+					if err != nil {
+						return err
+					}
+					content := buffer.Bytes()
+					log.Infof("Static config:\n%s", string(content))
+					proxyConfig.CustomConfigFile = proxyConfig.ConfigPath + "/envoy.yaml"
+					err = ioutil.WriteFile(proxyConfig.CustomConfigFile, content, 0644)
+					if err != nil {
+						return err
+					}
 				}
-				if disableInternalTelemetry {
-					opts["DisableReportCalls"] = "true"
-				}
-				tmpl, err := template.ParseFiles(templateFile)
-				if err != nil {
-					return err
-				}
-				var buffer bytes.Buffer
-				err = tmpl.Execute(&buffer, opts)
-				if err != nil {
-					return err
-				}
-				content := buffer.Bytes()
-				log.Infof("Static config:\n%s", string(content))
-				proxyConfig.CustomConfigFile = proxyConfig.ConfigPath + "/envoy.yaml"
-				err = ioutil.WriteFile(proxyConfig.CustomConfigFile, content, 0644)
-				if err != nil {
-					return err
-				}
+			} else if templateFile != "" && proxyConfig.CustomConfigFile == "" {
+				proxyConfig.ProxyBootstrapTemplatePath = templateFile
 			}
 
 			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
+			defer func() {
+				log.Info("pilot-agent is terminating")
+				cancel()
+				wg.Wait()
+			}()
 			// If a status port was provided, start handling status probes.
 			if statusPort > 0 {
 				parsedPorts, err := parseApplicationPorts()
@@ -284,30 +308,74 @@ var (
 					return err
 				}
 
-				statusServer := status.NewServer(status.Config{
-					AdminPort:        proxyAdminPort,
-					StatusPort:       statusPort,
-					ApplicationPorts: parsedPorts,
-					AppReadinessURL:  appReadinessProbeURL,
-					AppLivenessURL:   livenessProbeURL,
+				prober := os.Getenv(status.KubeAppProberEnvName)
+				statusServer, err := status.NewServer(status.Config{
+					AdminPort:          proxyAdminPort,
+					StatusPort:         statusPort,
+					ApplicationPorts:   parsedPorts,
+					KubeAppHTTPProbers: prober,
 				})
-				go statusServer.Run(ctx)
+				if err != nil {
+					return err
+				}
+				go waitForCompletion(ctx, statusServer.Run)
 			}
 
-			envoyProxy := envoy.NewProxy(proxyConfig, role.ServiceNode(), proxyLogLevel, pilotSAN)
-			agent := proxy.NewAgent(envoyProxy, proxy.DefaultRetry)
-			watcher := envoy.NewWatcher(proxyConfig, role, certs, pilotSAN, agent.ConfigCh())
+			log.Infof("PilotSAN %#v", pilotSAN)
 
-			go agent.Run(ctx)
-			go watcher.Run(ctx)
+			envoyProxy := envoy.NewProxy(proxyConfig, role.ServiceNode(), proxyLogLevel, pilotSAN, role.IPAddresses)
+			agent := proxy.NewAgent(envoyProxy, proxy.DefaultRetry, pilot.TerminationDrainDuration())
+			watcher := envoy.NewWatcher(certs, agent.ConfigCh())
 
-			stop := make(chan struct{})
-			cmd.WaitSignal(stop)
-			<-stop
+			go waitForCompletion(ctx, agent.Run)
+			go waitForCompletion(ctx, watcher.Run)
+
+			cmd.WaitSignal(make(chan struct{}))
 			return nil
 		},
 	}
 )
+
+func waitForCompletion(ctx context.Context, fn func(context.Context)) {
+	wg.Add(1)
+	fn(ctx)
+	wg.Done()
+}
+
+func getPilotSAN(domain string, ns string) []string {
+	var pilotSAN []string
+	if controlPlaneAuthPolicy == meshconfig.AuthenticationPolicy_MUTUAL_TLS.String() {
+		pilotTrustDomain := role.TrustDomain
+		if len(pilotTrustDomain) == 0 {
+			if registry == serviceregistry.KubernetesRegistry &&
+				(domain == os.Getenv("POD_NAMESPACE")+".svc.cluster.local" || domain == "") {
+				pilotTrustDomain = "cluster.local"
+			} else if registry == serviceregistry.ConsulRegistry &&
+				(domain == "service.consul" || domain == "") {
+				pilotTrustDomain = ""
+			} else {
+				pilotTrustDomain = domain
+			}
+		}
+		spiffe.SetTrustDomain(pilotTrustDomain)
+		pilotSAN = append(pilotSAN, envoy.GetPilotSAN(ns))
+	}
+	log.Infof("PilotSAN %#v", pilotSAN)
+	return pilotSAN
+}
+
+func getDNSDomain(domain string) string {
+	if len(domain) == 0 {
+		if registry == serviceregistry.KubernetesRegistry {
+			domain = os.Getenv("POD_NAMESPACE") + ".svc.cluster.local"
+		} else if registry == serviceregistry.ConsulRegistry {
+			domain = "service.consul"
+		} else {
+			domain = ""
+		}
+	}
+	return domain
+}
 
 func parseApplicationPorts() ([]uint16, error) {
 	parsedPorts := make([]uint16, len(applicationPorts))
@@ -335,15 +403,16 @@ func timeDuration(dur *types.Duration) time.Duration {
 func init() {
 	proxyCmd.PersistentFlags().StringVar((*string)(&registry), "serviceregistry",
 		string(serviceregistry.KubernetesRegistry),
-		fmt.Sprintf("Select the platform for service registry, options are {%s, %s, %s, %s, %s}",
-			serviceregistry.KubernetesRegistry, serviceregistry.ConsulRegistry,
-			serviceregistry.MCPRegistry, serviceregistry.MockRegistry, serviceregistry.ConfigRegistry))
-	proxyCmd.PersistentFlags().StringVar(&role.IPAddress, "ip", "",
+		fmt.Sprintf("Select the platform for service registry, options are {%s, %s, %s}",
+			serviceregistry.KubernetesRegistry, serviceregistry.ConsulRegistry, serviceregistry.MockRegistry))
+	proxyCmd.PersistentFlags().StringVar(&proxyIP, "ip", "",
 		"Proxy IP address. If not provided uses ${INSTANCE_IP} environment variable.")
 	proxyCmd.PersistentFlags().StringVar(&role.ID, "id", "",
 		"Proxy unique ID. If not provided uses ${POD_NAME}.${POD_NAMESPACE} from environment variables")
-	proxyCmd.PersistentFlags().StringVar(&role.Domain, "domain", "",
+	proxyCmd.PersistentFlags().StringVar(&DNSDomain, "domain", "",
 		"DNS domain suffix. If not provided uses ${POD_NAMESPACE}.svc.cluster.local")
+	proxyCmd.PersistentFlags().StringVar(&role.TrustDomain, "trust-domain", "",
+		"The domain to use for identities")
 	proxyCmd.PersistentFlags().Uint16Var(&statusPort, "statusPort", 0,
 		"HTTP Port on which to serve pilot agent status. If zero, agent status will not be provided.")
 	proxyCmd.PersistentFlags().StringSliceVar(&applicationPorts, "applicationPorts", []string{},
@@ -396,12 +465,8 @@ func init() {
 		"Go template bootstrap config")
 	proxyCmd.PersistentFlags().BoolVar(&disableInternalTelemetry, "disableInternalTelemetry", false,
 		"Disable internal telemetry")
-
-	// Flags for Pilot agent to take over Kubernetes readiness and liveness check.
-	proxyCmd.PersistentFlags().StringVar(&livenessProbeURL, "appLiveUrl", "",
-		"The url, including path and port, for the application liveness check. Examples, \"/path\", \":8080/path\"")
-	proxyCmd.PersistentFlags().StringVar(&appReadinessProbeURL, "appReadyUrl", "",
-		"The url, including path and port for the app readiness check. Examples, \"/path\", \":8080/path\"")
+	proxyCmd.PersistentFlags().BoolVar(&controlPlaneBootstrap, "controlPlaneBootstrap", true,
+		"Process bootstrap provided via templateFile to be used by control plane components.")
 
 	// Attach the Istio logging options to the command.
 	loggingOptions.AttachCobraFlags(rootCmd)

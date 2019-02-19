@@ -19,7 +19,7 @@ import (
 	"testing"
 
 	"istio.io/istio/mixer/test/client/env"
-	"istio.io/istio/mixer/test/client/test_data"
+	client_test "istio.io/istio/mixer/test/client/test_data"
 )
 
 // The Istio authn envoy config
@@ -51,7 +51,6 @@ var checkAttributesOkGet = `
   "context.reporter.uid": "",
   "mesh1.ip": "[1 1 1 1]",
   "mesh2.ip": "[0 0 0 0 0 0 0 0 0 0 255 255 204 152 189 116]",
-  "mesh3.ip": "[0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 8]",
   "request.host": "*",
   "request.path": "/echo",
   "request.time": "*",
@@ -96,7 +95,6 @@ var reportAttributesOkGet = `
   "context.reporter.uid": "",
   "mesh1.ip": "[1 1 1 1]",
   "mesh2.ip": "[0 0 0 0 0 0 0 0 0 0 255 255 204 152 189 116]",
-  "mesh3.ip": "[0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 8]",
   "request.host": "*",
   "request.path": "/echo",
   "request.time": "*",
@@ -108,7 +106,11 @@ var reportAttributesOkGet = `
   "destination.ip": "[127 0 0 1]",
   "destination.port": "*",
   "destination.uid": "",
+  "istio_authn": "*",
+  "jwt-auth": "*",
   "destination.namespace": "",
+  "istio_authn": "*",
+  "jwt-auth": "*",
   "target.name": "target-name",
   "target.user": "target-user",
   "target.uid": "POD222",
@@ -126,7 +128,7 @@ var reportAttributesOkGet = `
      "x-request-id": "*"
   },
   "request.size": 0,
-  "request.total_size": 306,
+  "request.total_size": 266,
   "response.total_size": "*",
   "response.time": "*",
   "response.size": 0,

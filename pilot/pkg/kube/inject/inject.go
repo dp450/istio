@@ -42,6 +42,7 @@ import (
 	yamlDecoder "k8s.io/apimachinery/pkg/util/yaml"
 
 	meshconfig "istio.io/api/mesh/v1alpha1"
+	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pkg/log"
 )
 
@@ -65,6 +66,7 @@ var (
 		{"traffic.sidecar.istio.io/excludeOutboundIPRanges", ValidateExcludeIPRanges},
 		{"traffic.sidecar.istio.io/includeInboundPorts", ValidateIncludeInboundPorts},
 		{"traffic.sidecar.istio.io/excludeInboundPorts", ValidateExcludeInboundPorts},
+		{"traffic.sidecar.istio.io/kubevirtInterfaces", alwaysValidFunc},
 	}
 
 	annotationPolicy = annotationRegistry[0]
@@ -135,6 +137,7 @@ const (
 	DefaultReadinessFailureThreshold    = 30
 	DefaultIncludeIPRanges              = "*"
 	DefaultIncludeInboundPorts          = "*"
+	DefaultkubevirtInterfaces           = ""
 )
 
 const (
@@ -145,10 +148,14 @@ const (
 // SidecarInjectionSpec collects all container types and volumes for
 // sidecar mesh injection
 type SidecarInjectionSpec struct {
-	InitContainers   []corev1.Container            `yaml:"initContainers"`
-	Containers       []corev1.Container            `yaml:"containers"`
-	Volumes          []corev1.Volume               `yaml:"volumes"`
-	ImagePullSecrets []corev1.LocalObjectReference `yaml:"imagePullSecrets"`
+	// RewriteHTTPProbe indicates whether Kubernetes HTTP prober in the PodSpec
+	// will be rewritten to be redirected by pilot agent.
+	RewriteAppHTTPProbe bool                          `yaml:"rewriteAppHTTPProbe"`
+	InitContainers      []corev1.Container            `yaml:"initContainers"`
+	Containers          []corev1.Container            `yaml:"containers"`
+	Volumes             []corev1.Volume               `yaml:"volumes"`
+	DNSConfig           *corev1.PodDNSConfig          `yaml:"dnsConfig"`
+	ImagePullSecrets    []corev1.LocalObjectReference `yaml:"imagePullSecrets"`
 }
 
 // SidecarTemplateData is the data object to which the templated
@@ -181,6 +188,7 @@ func ProxyImageName(hub string, tag string, debug bool) string {
 // into a kubernetes resource.
 type Params struct {
 	InitImage                    string                 `json:"initImage"`
+	RewriteAppHTTPProbe          bool                   `json:"rewriteAppHTTPProbe"`
 	ProxyImage                   string                 `json:"proxyImage"`
 	Verbosity                    int                    `json:"verbosity"`
 	SidecarProxyUID              uint64                 `json:"sidecarProxyUID"`
@@ -195,6 +203,7 @@ type Params struct {
 	ReadinessPeriodSeconds       uint32                 `json:"readinessPeriodSeconds"`
 	ReadinessFailureThreshold    uint32                 `json:"readinessFailureThreshold"`
 	SDSEnabled                   bool                   `json:"sdsEnabled"`
+	EnableSdsTokenMount          bool                   `json:"enableSdsTokenMount"`
 	// Comma separated list of IP ranges in CIDR form. If set, only redirect outbound traffic to Envoy for these IP
 	// ranges. All outbound traffic can be redirected with the wildcard character "*". Defaults to "*".
 	IncludeIPRanges string `json:"includeIPRanges"`
@@ -208,6 +217,9 @@ type Params struct {
 	// Comma separated list of inbound ports. If set, inbound traffic will not be redirected for those ports.
 	// Exclusions are only applied if configured to redirect all inbound traffic. By default, no ports are excluded.
 	ExcludeInboundPorts string `json:"excludeInboundPorts"`
+	// Comma separated list of virtual interfaces whose inbound traffic (from VM) will be treated as outbound
+	// By default, no interfaces are configured.
+	KubevirtInterfaces string `json:"kubevirtInterfaces"`
 }
 
 // Validate validates the parameters and returns an error if there is configuration issue.
@@ -278,7 +290,7 @@ func parsePorts(portsString string) ([]int, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed parsing port '%d': %v", port, err)
 			}
-			ports = append(ports, int(port))
+			ports = append(ports, port)
 		}
 	}
 	return ports, nil
@@ -296,8 +308,9 @@ func validateInterceptionMode(mode string) error {
 	switch mode {
 	case meshconfig.ProxyConfig_REDIRECT.String():
 	case meshconfig.ProxyConfig_TPROXY.String():
+	case string(model.InterceptionNone): // not a global mesh config - must be enabled for each sidecar
 	default:
-		return fmt.Errorf("interceptionMode invalid: %v", mode)
+		return fmt.Errorf("interceptionMode invalid, use REDIRECT,TPROXY,NONE: %v", mode)
 	}
 	return nil
 }
@@ -453,7 +466,7 @@ func injectRequired(ignored []string, config *Config, podSpec *corev1.PodSpec, m
 		log.Debugf("Sidecar injection policy for %v/%v: namespacePolicy:%v useDefault:%v inject:%v required:%v %s",
 			metadata.Namespace,
 			potentialPodName(metadata),
-			config,
+			config.Policy,
 			useDefault,
 			inject,
 			required,
@@ -481,8 +494,11 @@ func directory(filepath string) string {
 	return dir
 }
 
-func injectionData(sidecarTemplate, version string, deploymentMetadata *metav1.ObjectMeta, spec *corev1.PodSpec, metadata *metav1.ObjectMeta, proxyConfig *meshconfig.ProxyConfig, meshConfig *meshconfig.MeshConfig) (*SidecarInjectionSpec, string, error) { // nolint: lll
+func injectionData(sidecarTemplate, version string, deploymentMetadata *metav1.ObjectMeta, spec *corev1.PodSpec,
+	metadata *metav1.ObjectMeta, proxyConfig *meshconfig.ProxyConfig, meshConfig *meshconfig.MeshConfig) (
+	*SidecarInjectionSpec, string, error) { // nolint: lll
 	if err := validateAnnotations(metadata.GetAnnotations()); err != nil {
+		log.Infof("Invalid annotations: %v %v\n", err, metadata.GetAnnotations())
 		return nil, "", err
 	}
 
@@ -499,25 +515,38 @@ func injectionData(sidecarTemplate, version string, deploymentMetadata *metav1.O
 		"isset":               isset,
 		"excludeInboundPort":  excludeInboundPort,
 		"includeInboundPorts": includeInboundPorts,
+		"kubevirtInterfaces":  kubevirtInterfaces,
 		"applicationPorts":    applicationPorts,
 		"annotation":          annotation,
 		"valueOrDefault":      valueOrDefault,
 		"toJSON":              toJSON,
+		"toJson":              toJSON, // Used by, e.g. Istio 1.0.5 template sidecar-injector-configmap.yaml
+		"fromJSON":            fromJSON,
+		"toYaml":              toYaml,
+		"indent":              indent,
 		"directory":           directory,
 	}
 
 	var tmpl bytes.Buffer
 	temp := template.New("inject").Delims(sidecarTemplateDelimBegin, sidecarTemplateDelimEnd)
-	t := template.Must(temp.Funcs(funcMap).Parse(sidecarTemplate))
+	t, err := temp.Funcs(funcMap).Parse(sidecarTemplate)
+	if err != nil {
+		log.Infof("Failed to parse template: %v %v\n", err, sidecarTemplate)
+		return nil, "", err
+	}
 	if err := t.Execute(&tmpl, &data); err != nil {
+		log.Infof("Invalid template: %v %v\n", err, sidecarTemplate)
 		return nil, "", err
 	}
 
 	var sic SidecarInjectionSpec
 	if err := yaml.Unmarshal(tmpl.Bytes(), &sic); err != nil {
-		log.Warnf("Failed to unmarshall template %v %s", err, string(tmpl.Bytes()))
+		log.Warnf("Failed to unmarshall template %v %s", err, tmpl.String())
 		return nil, "", err
 	}
+
+	// set sidecar --concurrency
+	applyConcurrency(sic.Containers)
 
 	status := &SidecarInjectionStatus{Version: version}
 	for _, c := range sic.InitContainers {
@@ -680,8 +709,25 @@ func intoObject(sidecarTemplate string, meshconfig *meshconfig.MeshConfig, in ru
 	}
 
 	podSpec.InitContainers = append(podSpec.InitContainers, spec.InitContainers...)
+
 	podSpec.Containers = append(podSpec.Containers, spec.Containers...)
 	podSpec.Volumes = append(podSpec.Volumes, spec.Volumes...)
+
+	podSpec.DNSConfig = spec.DNSConfig
+
+	// Modify application containers' HTTP probe after appending injected containers.
+	// Because we need to extract istio-proxy's statusPort.
+	rewriteAppHTTPProbe(podSpec, spec)
+
+	// due to bug https://github.com/kubernetes/kubernetes/issues/57923,
+	// k8s sa jwt token volume mount file is only accessible to root user, not istio-proxy(the user that istio proxy runs as).
+	// workaround by https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
+	if meshconfig.EnableSdsTokenMount && meshconfig.SdsUdsPath != "" {
+		var grp = int64(1337)
+		podSpec.SecurityContext = &corev1.PodSecurityContext{
+			FSGroup: &grp,
+		}
+	}
 
 	if metadata.Annotations == nil {
 		metadata.Annotations = make(map[string]string)
@@ -733,6 +779,10 @@ func includeInboundPorts(containers []corev1.Container) string {
 	return getContainerPorts(containers, func(corev1.Container) bool { return true })
 }
 
+func kubevirtInterfaces(s string) string {
+	return s
+}
+
 func toJSON(m map[string]string) string {
 	if m == nil {
 		return "{}"
@@ -745,6 +795,38 @@ func toJSON(m map[string]string) string {
 	}
 
 	return string(ba)
+}
+
+func fromJSON(j string) interface{} {
+	var m interface{}
+	err := json.Unmarshal([]byte(j), &m)
+	if err != nil {
+		log.Warnf("Unable to unmarshal %s", j)
+		return "{}"
+	}
+
+	log.Warnf("%v", m)
+	return m
+}
+
+func indent(spaces int, source string) string {
+	res := strings.Split(source, "\n")
+	for i, line := range res {
+		if i > 0 {
+			res[i] = fmt.Sprintf(fmt.Sprintf("%% %ds%%s", spaces), "", line)
+		}
+	}
+	return strings.Join(res, "\n")
+}
+
+func toYaml(value interface{}) string {
+	y, err := yaml.Marshal(value)
+	if err != nil {
+		log.Warnf("Unable to marshal %v", value)
+		return ""
+	}
+
+	return string(y)
 }
 
 func annotation(meta metav1.ObjectMeta, name string, defaultValue interface{}) string {

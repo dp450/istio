@@ -23,11 +23,11 @@ import (
 	hcfilter "github.com/envoyproxy/go-control-plane/envoy/config/filter/http/health_check/v2"
 	http_conn "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
 	xdsutil "github.com/envoyproxy/go-control-plane/pkg/util"
-	"github.com/gogo/protobuf/types"
 
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pilot/pkg/networking/plugin"
 	"istio.io/istio/pilot/pkg/networking/util"
+	"istio.io/istio/pkg/proto"
 )
 
 // Plugin implements Istio mTLS auth
@@ -39,24 +39,31 @@ func NewPlugin() plugin.Plugin {
 }
 
 // BuildHealthCheckFilter returns a HealthCheck filter.
-func buildHealthCheckFilter(probe *model.Probe) *http_conn.HttpFilter {
-	return &http_conn.HttpFilter{
-		Name: xdsutil.HealthCheck,
-		Config: util.MessageToStruct(&hcfilter.HealthCheck{
-			PassThroughMode: &types.BoolValue{
-				Value: true,
+func buildHealthCheckFilter(probe *model.Probe, is11 bool) *http_conn.HttpFilter {
+	config := &hcfilter.HealthCheck{
+		PassThroughMode: proto.BoolTrue,
+		Headers: []*envoy_api_v2_route.HeaderMatcher{
+			{
+				Name:                 ":path",
+				HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_ExactMatch{ExactMatch: probe.Path},
 			},
-			Headers: []*envoy_api_v2_route.HeaderMatcher{
-				{
-					Name:                 ":path",
-					HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_ExactMatch{ExactMatch: probe.Path},
-				},
-			},
-		}),
+		},
 	}
+
+	out := &http_conn.HttpFilter{
+		Name: xdsutil.HealthCheck,
+	}
+
+	if is11 {
+		out.ConfigType = &http_conn.HttpFilter_TypedConfig{TypedConfig: util.MessageToAny(config)}
+	} else {
+		out.ConfigType = &http_conn.HttpFilter_Config{Config: util.MessageToStruct(config)}
+	}
+
+	return out
 }
 
-func buildHealthCheckFilters(filterChain *plugin.FilterChain, probes model.ProbeList, endpoint *model.NetworkEndpoint) {
+func buildHealthCheckFilters(filterChain *plugin.FilterChain, probes model.ProbeList, endpoint *model.NetworkEndpoint, is11 bool) {
 	for _, probe := range probes {
 		// Check that the probe matches the listener port. If not, then the probe will be handled
 		// as a management port and not traced. If the port does match, then we need to add a
@@ -64,7 +71,7 @@ func buildHealthCheckFilters(filterChain *plugin.FilterChain, probes model.Probe
 		// If no probe port is defined, then port has not specifically been defined, so assume filter
 		// needs to be applied.
 		if probe.Port == nil || probe.Port.Port == endpoint.Port {
-			filter := buildHealthCheckFilter(probe)
+			filter := buildHealthCheckFilter(probe, is11)
 			if !containsHTTPFilter(filterChain.HTTP, filter) {
 				filterChain.HTTP = append(filterChain.HTTP, filter)
 			}
@@ -96,7 +103,7 @@ func (Plugin) OnInboundListener(in *plugin.InputParams, mutable *plugin.MutableO
 		return nil
 	}
 
-	if in.Node.Type != model.Sidecar {
+	if in.Node.Type != model.SidecarProxy {
 		// Only care about sidecar.
 		return nil
 	}
@@ -109,10 +116,14 @@ func (Plugin) OnInboundListener(in *plugin.InputParams, mutable *plugin.MutableO
 		return fmt.Errorf("listener not defined in mutable %v", mutable)
 	}
 
+	is11 := util.IsProxyVersionGE11(in.Node)
+
 	for i := range mutable.Listener.FilterChains {
 		if in.ListenerProtocol == plugin.ListenerProtocolHTTP {
-			buildHealthCheckFilters(&mutable.FilterChains[i], in.Env.WorkloadHealthCheckInfo(in.Node.IPAddress),
-				&in.ServiceInstance.Endpoint)
+			for _, ip := range in.Node.IPAddresses {
+				buildHealthCheckFilters(&mutable.FilterChains[i], in.Env.WorkloadHealthCheckInfo(ip),
+					&in.ServiceInstance.Endpoint, is11)
+			}
 		}
 	}
 

@@ -17,41 +17,98 @@ package status
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
-
-	"istio.io/istio/pilot/pkg/model"
-	"istio.io/istio/pkg/log"
-	"istio.io/istio/pkg/test/application"
-	"istio.io/istio/pkg/test/application/echo"
 )
 
-var (
-	appPort uint16
-)
+type handler struct{}
 
-func init() {
-	appFactory := &echo.Factory{
-		Ports: model.PortList{{
-			Name:     "http",
-			Protocol: model.ProtocolHTTP,
-		}},
-		Version: "version-foo",
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/hello/sunnyvale" && r.URL.Path != "/" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
 	}
-	app, err := appFactory.NewApplication(application.Dialer{HTTP: application.DefaultHTTPDoFunc})
-	if err != nil {
-		log.Fatalf("Failed to create application %v", err)
+	w.Write([]byte("welcome, it works"))
+}
+
+func TestNewServer(t *testing.T) {
+	testCases := []struct {
+		httpProbe string
+		err       string
+	}{
+		// Json can't be parsed.
+		{
+			httpProbe: "invalid-prober-json-encoding",
+			err:       "failed to decode",
+		},
+		// map key is not well formed.
+		{
+			httpProbe: `{"abc": {"path": "/app-foo/health"}}`,
+			err:       "invalid key",
+		},
+		// Port is not Int typed.
+		{
+			httpProbe: `{"/app-health/hello-world/readyz": {"path": "/hello/sunnyvale", "port": "container-port-dontknow"}}`,
+			err:       "must be int type",
+		},
+		// A valid input.
+		{
+			httpProbe: `{"/app-health/hello-world/readyz": {"path": "/hello/sunnyvale", "port": 8080},` +
+				`"/app-health/business/livez": {"path": "/buisiness/live", "port": 9090}}`,
+		},
+		// A valid input with empty probing path, which happens when HTTPGetAction.Path is not specified.
+		{
+			httpProbe: `{"/app-health/hello-world/readyz": {"path": "/hello/sunnyvale", "port": 8080},
+"/app-health/business/livez": {"port": 9090}}`,
+		},
+		// A valid input without any prober info.
+		{
+			httpProbe: `{}`,
+		},
 	}
-	log.Fatalf("application created %v", app.GetPorts())
-	appPort = uint16(app.GetPorts()[0].Port)
+	for _, tc := range testCases {
+		_, err := NewServer(Config{
+			KubeAppHTTPProbers: tc.httpProbe,
+		})
+
+		if err == nil {
+			if tc.err != "" {
+				t.Errorf("test case failed [%v], expect error %v", tc.httpProbe, tc.err)
+			}
+			continue
+		}
+		if tc.err == "" {
+			t.Errorf("test case failed [%v], expect no error, got %v", tc.httpProbe, err)
+		}
+		// error case, error string should match.
+		if !strings.Contains(err.Error(), tc.err) {
+			t.Errorf("test case failed [%v], expect error %v, got %v", tc.httpProbe, tc.err, err)
+		}
+	}
 }
 
 func TestAppProbe(t *testing.T) {
-	server := NewServer(Config{
-		StatusPort:      0,
-		AppReadinessURL: fmt.Sprintf(":%v/", appPort),
+	// Starts the application first.
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Errorf("failed to allocate unused port %v", err)
+	}
+	go http.Serve(listener, &handler{})
+	appPort := listener.Addr().(*net.TCPAddr).Port
+
+	// Starts the pilot agent status server.
+	server, err := NewServer(Config{
+		StatusPort: 0,
+		KubeAppHTTPProbers: fmt.Sprintf(`{"/app-health/hello-world/readyz": {"path": "/hello/sunnyvale", "port": %v},
+"/app-health/hello-world/livez": {"port": %v}}`, appPort, appPort),
 	})
+	if err != nil {
+		t.Errorf("failed to create status server %v", err)
+		return
+	}
 	go server.Run(context.Background())
 
 	// We wait a bit here to ensure server's statusPort is updated.
@@ -67,18 +124,29 @@ func TestAppProbe(t *testing.T) {
 		err        string
 	}{
 		{
-			probePath:  fmt.Sprintf(":%v/app/ready", statusPort),
-			statusCode: 200,
+			probePath:  fmt.Sprintf(":%v/bad-path-should-be-disallowed", statusPort),
+			statusCode: http.StatusBadRequest,
 		},
 		{
-			probePath: fmt.Sprintf(":%v/app/live", statusPort),
-			// expect 404 because we didn't configure status server to take over app's liveness check.
-			statusCode: 404,
+			probePath:  fmt.Sprintf(":%v/app-health/hello-world/readyz", statusPort),
+			statusCode: http.StatusOK,
+		},
+		{
+			probePath:  fmt.Sprintf(":%v/app-health/hello-world/livez", statusPort),
+			statusCode: http.StatusOK,
 		},
 	}
 	for _, tc := range testCases {
 		client := http.Client{}
-		resp, _ := client.Get(fmt.Sprintf("http://localhost%s", tc.probePath))
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://localhost%s", tc.probePath), nil)
+		if err != nil {
+			t.Errorf("[%v] failed to create request", tc.probePath)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal("request failed")
+		}
+		defer resp.Body.Close()
 		if resp.StatusCode != tc.statusCode {
 			t.Errorf("[%v] unexpected status code, want = %v, got = %v", tc.probePath, tc.statusCode, resp.StatusCode)
 		}

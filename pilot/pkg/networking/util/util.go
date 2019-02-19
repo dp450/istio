@@ -16,6 +16,8 @@ package util
 
 import (
 	"fmt"
+	"math"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,11 +25,13 @@ import (
 
 	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	"github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
+	"github.com/envoyproxy/go-control-plane/envoy/api/v2/endpoint"
 	"github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
 	"github.com/envoyproxy/go-control-plane/pkg/util"
 	"github.com/gogo/protobuf/proto"
 	"github.com/gogo/protobuf/types"
 
+	meshconfig "istio.io/api/mesh/v1alpha1"
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pkg/log"
 )
@@ -38,6 +42,17 @@ const (
 	// PassthroughCluster to forward traffic to the original destination requested. This cluster is used when
 	// traffic does not match any listener in envoy.
 	PassthroughCluster = "PassthroughCluster"
+	// SniClusterFilter is the name of the sni_cluster envoy filter
+	SniClusterFilter = "envoy.filters.network.sni_cluster"
+	// NoProxyLocality represents the locality associated with a proxy that doesn't have locality settings
+	// since all our localities are in region/zone/subzone format, the empty locality will be of form
+	// '///'
+	NoProxyLocality = "///"
+	// IstioMetadataKey is the key under which metadata is added to a route or cluster
+	// regarding the virtual service or destination rule used for each
+	IstioMetadataKey = "istio"
+	// The range of LoadBalancingWeight is [1, 128]
+	maxLoadBalancingWeight = 128
 )
 
 // ALPNH2Only advertises that Proxy is going to use HTTP/2 when talking to the cluster.
@@ -77,12 +92,22 @@ func ConvertAddressToCidr(addr string) *core.CidrRange {
 	return cidr
 }
 
-// BuildAddress returns a SocketAddress with the given ip and port.
-func BuildAddress(ip string, port uint32) core.Address {
+// BuildAddress returns a SocketAddress with the given ip and port or uds.
+func BuildAddress(bind string, port uint32) core.Address {
+	if len(bind) > 0 && strings.HasPrefix(bind, model.UnixAddressPrefix) {
+		return core.Address{
+			Address: &core.Address_Pipe{
+				Pipe: &core.Pipe{
+					Path: bind,
+				},
+			},
+		}
+	}
+
 	return core.Address{
 		Address: &core.Address_SocketAddress{
 			SocketAddress: &core.SocketAddress{
-				Address: ip,
+				Address: bind,
 				PortSpecifier: &core.SocketAddress_PortValue{
 					PortValue: port,
 				},
@@ -103,6 +128,61 @@ func GetNetworkEndpointAddress(n *model.NetworkEndpoint) core.Address {
 	}
 }
 
+// lbWeightNormalize set LbEndpoints within a locality with a valid LoadBalancingWeight.
+func lbWeightNormalize(endpoints []endpoint.LbEndpoint) []endpoint.LbEndpoint {
+	var totalLbEndpointsNum uint32
+	var needNormalize bool
+
+	for _, ep := range endpoints {
+		if ep.GetLoadBalancingWeight().GetValue() > maxLoadBalancingWeight {
+			needNormalize = true
+		}
+		totalLbEndpointsNum += ep.GetLoadBalancingWeight().GetValue()
+	}
+	if !needNormalize {
+		return endpoints
+	}
+
+	out := make([]endpoint.LbEndpoint, len(endpoints))
+	for i, ep := range endpoints {
+		weight := float64(ep.GetLoadBalancingWeight().GetValue()*maxLoadBalancingWeight) / float64(totalLbEndpointsNum)
+		ep.LoadBalancingWeight = &types.UInt32Value{
+			Value: uint32(math.Ceil(weight)),
+		}
+		out[i] = ep
+	}
+
+	return out
+}
+
+// LocalityLbWeightNormalize set LocalityLbEndpoints within a cluster with a valid LoadBalancingWeight.
+func LocalityLbWeightNormalize(endpoints []endpoint.LocalityLbEndpoints) []endpoint.LocalityLbEndpoints {
+	var totalLbEndpointsNum uint32
+	var needNormalize bool
+
+	for i, localityLbEndpoint := range endpoints {
+		if localityLbEndpoint.GetLoadBalancingWeight().GetValue() > maxLoadBalancingWeight {
+			needNormalize = true
+		}
+		totalLbEndpointsNum += localityLbEndpoint.GetLoadBalancingWeight().GetValue()
+		endpoints[i].LbEndpoints = lbWeightNormalize(localityLbEndpoint.LbEndpoints)
+	}
+	if !needNormalize {
+		return endpoints
+	}
+
+	out := make([]endpoint.LocalityLbEndpoints, len(endpoints))
+	for i, localityLbEndpoint := range endpoints {
+		weight := float64(localityLbEndpoint.GetLoadBalancingWeight().GetValue()*maxLoadBalancingWeight) / float64(totalLbEndpointsNum)
+		localityLbEndpoint.LoadBalancingWeight = &types.UInt32Value{
+			Value: uint32(math.Ceil(weight)),
+		}
+		out[i] = localityLbEndpoint
+	}
+
+	return out
+}
+
 // GetByAddress returns a listener by its address
 // TODO(mostrowski): consider passing map around to save iteration.
 func GetByAddress(listeners []*xdsapi.Listener, addr string) *xdsapi.Listener {
@@ -112,6 +192,16 @@ func GetByAddress(listeners []*xdsapi.Listener, addr string) *xdsapi.Listener {
 		}
 	}
 	return nil
+}
+
+// MessageToAny converts from proto message to proto Any
+func MessageToAny(msg proto.Message) *types.Any {
+	s, err := types.MarshalAny(msg)
+	if err != nil {
+		log.Error(err.Error())
+		return nil
+	}
+	return s
 }
 
 // MessageToStruct converts from proto message to proto Struct
@@ -148,18 +238,150 @@ func SortVirtualHosts(hosts []route.VirtualHost) {
 	})
 }
 
-// isProxyVersion checks whether the given Proxy version matches the supplied prefix.
-func isProxyVersion(node *model.Proxy, prefix string) bool {
-	ver, found := node.GetProxyVersion()
-	return found && strings.HasPrefix(ver, prefix)
+// IsProxyVersionGE11 checks whether the given Proxy version is greater than or equals 1.1.
+func IsProxyVersionGE11(node *model.Proxy) bool {
+	ver, _ := node.GetProxyVersion()
+	return ver >= "1.1"
 }
 
-// Is1xProxy checks whether the given Proxy version is 1.x.
-func Is1xProxy(node *model.Proxy) bool {
-	return isProxyVersion(node, "1.")
+// ResolveHostsInNetworksConfig will go through the Gateways addresses for all
+// networks in the config and if it's not an IP address it will try to lookup
+// that hostname and replace it with the IP address in the config
+func ResolveHostsInNetworksConfig(config *meshconfig.MeshNetworks) {
+	if config == nil {
+		return
+	}
+	for _, n := range config.Networks {
+		for _, gw := range n.Gateways {
+			gwIP := net.ParseIP(gw.GetAddress())
+			if gwIP == nil {
+				addrs, err := net.LookupHost(gw.GetAddress())
+				if err == nil && len(addrs) > 0 {
+					gw.Gw = &meshconfig.Network_IstioNetworkGateway_Address{
+						Address: addrs[0],
+					}
+				}
+			}
+		}
+	}
 }
 
-// Is11Proxy checks whether the given Proxy version is 1.1.
-func Is11Proxy(node *model.Proxy) bool {
-	return isProxyVersion(node, "1.1")
+// ConvertLocality converts '/' separated locality string to Locality struct.
+func ConvertLocality(locality string) *core.Locality {
+	if locality == "" {
+		return nil
+	}
+
+	region, zone, subzone := SplitLocality(locality)
+	return &core.Locality{
+		Region:  region,
+		Zone:    zone,
+		SubZone: subzone,
+	}
+}
+
+// IsLocalityEmpty checks if a locality is empty (checking region is good enough, based on how its initialized)
+func IsLocalityEmpty(locality *core.Locality) bool {
+	if locality == nil || (len(locality.GetRegion()) == 0) {
+		return true
+	}
+	return false
+}
+
+func LocalityMatch(proxyLocality *core.Locality, ruleLocality string) bool {
+	ruleRegion, ruleZone, ruleSubzone := SplitLocality(ruleLocality)
+	regionMatch := ruleRegion == "*" || proxyLocality.GetRegion() == ruleRegion
+	zoneMatch := ruleZone == "*" || ruleZone == "" || proxyLocality.GetZone() == ruleZone
+	subzoneMatch := ruleSubzone == "*" || ruleSubzone == "" || proxyLocality.GetSubZone() == ruleSubzone
+
+	if regionMatch && zoneMatch && subzoneMatch {
+		return true
+	}
+	return false
+}
+
+func SplitLocality(locality string) (region, zone, subzone string) {
+	items := strings.Split(locality, "/")
+	switch len(items) {
+	case 1:
+		return items[0], "", ""
+	case 2:
+		return items[0], items[1], ""
+	default:
+		return items[0], items[1], items[2]
+	}
+}
+
+func LbPriority(proxyLocality, endpointsLocality *core.Locality) int {
+	if proxyLocality.GetRegion() == endpointsLocality.GetRegion() {
+		if proxyLocality.GetZone() == endpointsLocality.GetZone() {
+			if proxyLocality.GetSubZone() == endpointsLocality.GetSubZone() {
+				return 0
+			}
+			return 1
+		}
+		return 2
+	}
+	return 3
+}
+
+// return a shallow copy cluster
+func CloneCluster(cluster *xdsapi.Cluster) xdsapi.Cluster {
+	out := xdsapi.Cluster{}
+	if cluster == nil {
+		return out
+	}
+
+	out = *cluster
+	loadAssignment := CloneClusterLoadAssignment(cluster.LoadAssignment)
+	out.LoadAssignment = &loadAssignment
+
+	return out
+}
+
+// return a shallow copy ClusterLoadAssignment
+func CloneClusterLoadAssignment(endpoint *xdsapi.ClusterLoadAssignment) xdsapi.ClusterLoadAssignment {
+	out := xdsapi.ClusterLoadAssignment{}
+	if endpoint == nil {
+		return out
+	}
+
+	out = *endpoint
+	out.Endpoints = cloneLocalityLbEndpoints(out.Endpoints)
+
+	return out
+}
+
+// return a shallow copy LocalityLbEndpoints
+func cloneLocalityLbEndpoints(endpoints []endpoint.LocalityLbEndpoints) []endpoint.LocalityLbEndpoints {
+	out := make([]endpoint.LocalityLbEndpoints, 0, len(endpoints))
+	for _, ep := range endpoints {
+		clone := ep
+		if ep.LoadBalancingWeight != nil {
+			clone.LoadBalancingWeight = &types.UInt32Value{
+				Value: ep.GetLoadBalancingWeight().GetValue(),
+			}
+		}
+		out = append(out, clone)
+	}
+	return out
+}
+
+// BuildConfigInfoMetadata builds core.Metadata struct containing the
+// name.namespace of the config, the type, etc. Used by Mixer client
+// to generate attributes for policy and telemetry.
+func BuildConfigInfoMetadata(config model.ConfigMeta) *core.Metadata {
+	return &core.Metadata{
+		FilterMetadata: map[string]*types.Struct{
+			IstioMetadataKey: {
+				Fields: map[string]*types.Value{
+					"config": {
+						Kind: &types.Value_StringValue{
+							StringValue: fmt.Sprintf("/apis/%s/%s/namespaces/%s/%s/%s", config.Group, config.Version, config.Namespace, config.Type, config.Name),
+						},
+					},
+				},
+			},
+		},
+	}
 }

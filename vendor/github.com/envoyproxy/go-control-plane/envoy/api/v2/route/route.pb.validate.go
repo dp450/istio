@@ -159,7 +159,19 @@ func (m *VirtualHost) Validate() error {
 
 	// no validation rules for PerFilterConfig
 
+	// no validation rules for TypedPerFilterConfig
+
 	// no validation rules for IncludeRequestAttemptCount
+
+	if v, ok := interface{}(m.GetRetryPolicy()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return VirtualHostValidationError{
+				Field:  "RetryPolicy",
+				Reason: "embedded message failed validation",
+				Cause:  err,
+			}
+		}
+	}
 
 	return nil
 }
@@ -233,6 +245,8 @@ func (m *Route) Validate() error {
 	}
 
 	// no validation rules for PerFilterConfig
+
+	// no validation rules for TypedPerFilterConfig
 
 	if len(m.GetRequestHeadersToAdd()) > 1000 {
 		return RouteValidationError{
@@ -452,6 +466,16 @@ func (m *RouteMatch) Validate() error {
 		}
 	}
 
+	if v, ok := interface{}(m.GetRuntimeFraction()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return RouteMatchValidationError{
+				Field:  "RuntimeFraction",
+				Reason: "embedded message failed validation",
+				Cause:  err,
+			}
+		}
+	}
+
 	for idx, item := range m.GetHeaders() {
 		_, _ = idx, item
 
@@ -513,34 +537,6 @@ func (m *RouteMatch) Validate() error {
 		return RouteMatchValidationError{
 			Field:  "PathSpecifier",
 			Reason: "value is required",
-		}
-
-	}
-
-	switch m.RuntimeSpecifier.(type) {
-
-	case *RouteMatch_Runtime:
-
-		if v, ok := interface{}(m.GetRuntime()).(interface{ Validate() error }); ok {
-			if err := v.Validate(); err != nil {
-				return RouteMatchValidationError{
-					Field:  "Runtime",
-					Reason: "embedded message failed validation",
-					Cause:  err,
-				}
-			}
-		}
-
-	case *RouteMatch_RuntimeFraction:
-
-		if v, ok := interface{}(m.GetRuntimeFraction()).(interface{ Validate() error }); ok {
-			if err := v.Validate(); err != nil {
-				return RouteMatchValidationError{
-					Field:  "RuntimeFraction",
-					Reason: "embedded message failed validation",
-					Cause:  err,
-				}
-			}
 		}
 
 	}
@@ -616,14 +612,42 @@ func (m *CorsPolicy) Validate() error {
 		}
 	}
 
-	if v, ok := interface{}(m.GetEnabled()).(interface{ Validate() error }); ok {
+	if v, ok := interface{}(m.GetShadowEnabled()).(interface{ Validate() error }); ok {
 		if err := v.Validate(); err != nil {
 			return CorsPolicyValidationError{
-				Field:  "Enabled",
+				Field:  "ShadowEnabled",
 				Reason: "embedded message failed validation",
 				Cause:  err,
 			}
 		}
+	}
+
+	switch m.EnabledSpecifier.(type) {
+
+	case *CorsPolicy_Enabled:
+
+		if v, ok := interface{}(m.GetEnabled()).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return CorsPolicyValidationError{
+					Field:  "Enabled",
+					Reason: "embedded message failed validation",
+					Cause:  err,
+				}
+			}
+		}
+
+	case *CorsPolicy_FilterEnabled:
+
+		if v, ok := interface{}(m.GetFilterEnabled()).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return CorsPolicyValidationError{
+					Field:  "FilterEnabled",
+					Reason: "embedded message failed validation",
+					Cause:  err,
+				}
+			}
+		}
+
 	}
 
 	return nil
@@ -803,26 +827,6 @@ func (m *RouteAction) Validate() error {
 
 	}
 
-	if v, ok := interface{}(m.GetUseWebsocket()).(interface{ Validate() error }); ok {
-		if err := v.Validate(); err != nil {
-			return RouteActionValidationError{
-				Field:  "UseWebsocket",
-				Reason: "embedded message failed validation",
-				Cause:  err,
-			}
-		}
-	}
-
-	if v, ok := interface{}(m.GetWebsocketConfig()).(interface{ Validate() error }); ok {
-		if err := v.Validate(); err != nil {
-			return RouteActionValidationError{
-				Field:  "WebsocketConfig",
-				Reason: "embedded message failed validation",
-				Cause:  err,
-			}
-		}
-	}
-
 	if v, ok := interface{}(m.GetCors()).(interface{ Validate() error }); ok {
 		if err := v.Validate(); err != nil {
 			return RouteActionValidationError{
@@ -842,6 +846,23 @@ func (m *RouteAction) Validate() error {
 			}
 		}
 	}
+
+	for idx, item := range m.GetUpgradeConfigs() {
+		_, _ = idx, item
+
+		if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return RouteActionValidationError{
+					Field:  fmt.Sprintf("UpgradeConfigs[%v]", idx),
+					Reason: "embedded message failed validation",
+					Cause:  err,
+				}
+			}
+		}
+
+	}
+
+	// no validation rules for InternalRedirectAction
 
 	switch m.ClusterSpecifier.(type) {
 
@@ -936,6 +957,97 @@ func (e RouteActionValidationError) Error() string {
 
 var _ error = RouteActionValidationError{}
 
+// Validate checks the field values on RetryPolicy with the rules defined in
+// the proto definition for this message. If any rules are violated, an error
+// is returned.
+func (m *RetryPolicy) Validate() error {
+	if m == nil {
+		return nil
+	}
+
+	// no validation rules for RetryOn
+
+	if v, ok := interface{}(m.GetNumRetries()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return RetryPolicyValidationError{
+				Field:  "NumRetries",
+				Reason: "embedded message failed validation",
+				Cause:  err,
+			}
+		}
+	}
+
+	if v, ok := interface{}(m.GetPerTryTimeout()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return RetryPolicyValidationError{
+				Field:  "PerTryTimeout",
+				Reason: "embedded message failed validation",
+				Cause:  err,
+			}
+		}
+	}
+
+	if v, ok := interface{}(m.GetRetryPriority()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return RetryPolicyValidationError{
+				Field:  "RetryPriority",
+				Reason: "embedded message failed validation",
+				Cause:  err,
+			}
+		}
+	}
+
+	for idx, item := range m.GetRetryHostPredicate() {
+		_, _ = idx, item
+
+		if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return RetryPolicyValidationError{
+					Field:  fmt.Sprintf("RetryHostPredicate[%v]", idx),
+					Reason: "embedded message failed validation",
+					Cause:  err,
+				}
+			}
+		}
+
+	}
+
+	// no validation rules for HostSelectionRetryMaxAttempts
+
+	return nil
+}
+
+// RetryPolicyValidationError is the validation error returned by
+// RetryPolicy.Validate if the designated constraints aren't met.
+type RetryPolicyValidationError struct {
+	Field  string
+	Reason string
+	Cause  error
+	Key    bool
+}
+
+// Error satisfies the builtin error interface
+func (e RetryPolicyValidationError) Error() string {
+	cause := ""
+	if e.Cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.Cause)
+	}
+
+	key := ""
+	if e.Key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sRetryPolicy.%s: %s%s",
+		key,
+		e.Field,
+		e.Reason,
+		cause)
+}
+
+var _ error = RetryPolicyValidationError{}
+
 // Validate checks the field values on RedirectAction with the rules defined in
 // the proto definition for this message. If any rules are violated, an error
 // is returned.
@@ -946,6 +1058,8 @@ func (m *RedirectAction) Validate() error {
 
 	// no validation rules for HostRedirect
 
+	// no validation rules for PortRedirect
+
 	if _, ok := RedirectAction_RedirectResponseCode_name[int32(m.GetResponseCode())]; !ok {
 		return RedirectActionValidationError{
 			Field:  "ResponseCode",
@@ -953,9 +1067,17 @@ func (m *RedirectAction) Validate() error {
 		}
 	}
 
-	// no validation rules for HttpsRedirect
-
 	// no validation rules for StripQuery
+
+	switch m.SchemeRewriteSpecifier.(type) {
+
+	case *RedirectAction_HttpsRedirect:
+		// no validation rules for HttpsRedirect
+
+	case *RedirectAction_SchemeRedirect:
+		// no validation rules for SchemeRedirect
+
+	}
 
 	switch m.PathRewriteSpecifier.(type) {
 
@@ -1484,6 +1606,8 @@ func (m *WeightedCluster_ClusterWeight) Validate() error {
 
 	// no validation rules for PerFilterConfig
 
+	// no validation rules for TypedPerFilterConfig
+
 	return nil
 }
 
@@ -1562,97 +1686,6 @@ func (e RouteMatch_GrpcRouteMatchOptionsValidationError) Error() string {
 
 var _ error = RouteMatch_GrpcRouteMatchOptionsValidationError{}
 
-// Validate checks the field values on RouteAction_RetryPolicy with the rules
-// defined in the proto definition for this message. If any rules are
-// violated, an error is returned.
-func (m *RouteAction_RetryPolicy) Validate() error {
-	if m == nil {
-		return nil
-	}
-
-	// no validation rules for RetryOn
-
-	if v, ok := interface{}(m.GetNumRetries()).(interface{ Validate() error }); ok {
-		if err := v.Validate(); err != nil {
-			return RouteAction_RetryPolicyValidationError{
-				Field:  "NumRetries",
-				Reason: "embedded message failed validation",
-				Cause:  err,
-			}
-		}
-	}
-
-	if v, ok := interface{}(m.GetPerTryTimeout()).(interface{ Validate() error }); ok {
-		if err := v.Validate(); err != nil {
-			return RouteAction_RetryPolicyValidationError{
-				Field:  "PerTryTimeout",
-				Reason: "embedded message failed validation",
-				Cause:  err,
-			}
-		}
-	}
-
-	if v, ok := interface{}(m.GetRetryPriority()).(interface{ Validate() error }); ok {
-		if err := v.Validate(); err != nil {
-			return RouteAction_RetryPolicyValidationError{
-				Field:  "RetryPriority",
-				Reason: "embedded message failed validation",
-				Cause:  err,
-			}
-		}
-	}
-
-	for idx, item := range m.GetRetryHostPredicate() {
-		_, _ = idx, item
-
-		if v, ok := interface{}(item).(interface{ Validate() error }); ok {
-			if err := v.Validate(); err != nil {
-				return RouteAction_RetryPolicyValidationError{
-					Field:  fmt.Sprintf("RetryHostPredicate[%v]", idx),
-					Reason: "embedded message failed validation",
-					Cause:  err,
-				}
-			}
-		}
-
-	}
-
-	// no validation rules for HostSelectionRetryMaxAttempts
-
-	return nil
-}
-
-// RouteAction_RetryPolicyValidationError is the validation error returned by
-// RouteAction_RetryPolicy.Validate if the designated constraints aren't met.
-type RouteAction_RetryPolicyValidationError struct {
-	Field  string
-	Reason string
-	Cause  error
-	Key    bool
-}
-
-// Error satisfies the builtin error interface
-func (e RouteAction_RetryPolicyValidationError) Error() string {
-	cause := ""
-	if e.Cause != nil {
-		cause = fmt.Sprintf(" | caused by: %v", e.Cause)
-	}
-
-	key := ""
-	if e.Key {
-		key = "key for "
-	}
-
-	return fmt.Sprintf(
-		"invalid %sRouteAction_RetryPolicy.%s: %s%s",
-		key,
-		e.Field,
-		e.Reason,
-		cause)
-}
-
-var _ error = RouteAction_RetryPolicyValidationError{}
-
 // Validate checks the field values on RouteAction_RequestMirrorPolicy with the
 // rules defined in the proto definition for this message. If any rules are
 // violated, an error is returned.
@@ -1669,6 +1702,16 @@ func (m *RouteAction_RequestMirrorPolicy) Validate() error {
 	}
 
 	// no validation rules for RuntimeKey
+
+	if v, ok := interface{}(m.GetRuntimeFraction()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return RouteAction_RequestMirrorPolicyValidationError{
+				Field:  "RuntimeFraction",
+				Reason: "embedded message failed validation",
+				Cause:  err,
+			}
+		}
+	}
 
 	return nil
 }
@@ -1795,95 +1838,20 @@ func (e RouteAction_HashPolicyValidationError) Error() string {
 
 var _ error = RouteAction_HashPolicyValidationError{}
 
-// Validate checks the field values on RouteAction_WebSocketProxyConfig with
-// the rules defined in the proto definition for this message. If any rules
-// are violated, an error is returned.
-func (m *RouteAction_WebSocketProxyConfig) Validate() error {
+// Validate checks the field values on RouteAction_UpgradeConfig with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, an error is returned.
+func (m *RouteAction_UpgradeConfig) Validate() error {
 	if m == nil {
 		return nil
 	}
 
-	// no validation rules for StatPrefix
+	// no validation rules for UpgradeType
 
-	if d := m.GetIdleTimeout(); d != nil {
-		dur := *d
-
-		gt := time.Duration(0*time.Second + 0*time.Nanosecond)
-
-		if dur <= gt {
-			return RouteAction_WebSocketProxyConfigValidationError{
-				Field:  "IdleTimeout",
-				Reason: "value must be greater than 0s",
-			}
-		}
-
-	}
-
-	if wrapper := m.GetMaxConnectAttempts(); wrapper != nil {
-
-		if wrapper.GetValue() < 1 {
-			return RouteAction_WebSocketProxyConfigValidationError{
-				Field:  "MaxConnectAttempts",
-				Reason: "value must be greater than or equal to 1",
-			}
-		}
-
-	}
-
-	return nil
-}
-
-// RouteAction_WebSocketProxyConfigValidationError is the validation error
-// returned by RouteAction_WebSocketProxyConfig.Validate if the designated
-// constraints aren't met.
-type RouteAction_WebSocketProxyConfigValidationError struct {
-	Field  string
-	Reason string
-	Cause  error
-	Key    bool
-}
-
-// Error satisfies the builtin error interface
-func (e RouteAction_WebSocketProxyConfigValidationError) Error() string {
-	cause := ""
-	if e.Cause != nil {
-		cause = fmt.Sprintf(" | caused by: %v", e.Cause)
-	}
-
-	key := ""
-	if e.Key {
-		key = "key for "
-	}
-
-	return fmt.Sprintf(
-		"invalid %sRouteAction_WebSocketProxyConfig.%s: %s%s",
-		key,
-		e.Field,
-		e.Reason,
-		cause)
-}
-
-var _ error = RouteAction_WebSocketProxyConfigValidationError{}
-
-// Validate checks the field values on RouteAction_RetryPolicy_RetryPriority
-// with the rules defined in the proto definition for this message. If any
-// rules are violated, an error is returned.
-func (m *RouteAction_RetryPolicy_RetryPriority) Validate() error {
-	if m == nil {
-		return nil
-	}
-
-	if len(m.GetName()) < 1 {
-		return RouteAction_RetryPolicy_RetryPriorityValidationError{
-			Field:  "Name",
-			Reason: "value length must be at least 1 bytes",
-		}
-	}
-
-	if v, ok := interface{}(m.GetConfig()).(interface{ Validate() error }); ok {
+	if v, ok := interface{}(m.GetEnabled()).(interface{ Validate() error }); ok {
 		if err := v.Validate(); err != nil {
-			return RouteAction_RetryPolicy_RetryPriorityValidationError{
-				Field:  "Config",
+			return RouteAction_UpgradeConfigValidationError{
+				Field:  "Enabled",
 				Reason: "embedded message failed validation",
 				Cause:  err,
 			}
@@ -1893,10 +1861,9 @@ func (m *RouteAction_RetryPolicy_RetryPriority) Validate() error {
 	return nil
 }
 
-// RouteAction_RetryPolicy_RetryPriorityValidationError is the validation error
-// returned by RouteAction_RetryPolicy_RetryPriority.Validate if the
-// designated constraints aren't met.
-type RouteAction_RetryPolicy_RetryPriorityValidationError struct {
+// RouteAction_UpgradeConfigValidationError is the validation error returned by
+// RouteAction_UpgradeConfig.Validate if the designated constraints aren't met.
+type RouteAction_UpgradeConfigValidationError struct {
 	Field  string
 	Reason string
 	Cause  error
@@ -1904,7 +1871,7 @@ type RouteAction_RetryPolicy_RetryPriorityValidationError struct {
 }
 
 // Error satisfies the builtin error interface
-func (e RouteAction_RetryPolicy_RetryPriorityValidationError) Error() string {
+func (e RouteAction_UpgradeConfigValidationError) Error() string {
 	cause := ""
 	if e.Cause != nil {
 		cause = fmt.Sprintf(" | caused by: %v", e.Cause)
@@ -1916,74 +1883,14 @@ func (e RouteAction_RetryPolicy_RetryPriorityValidationError) Error() string {
 	}
 
 	return fmt.Sprintf(
-		"invalid %sRouteAction_RetryPolicy_RetryPriority.%s: %s%s",
+		"invalid %sRouteAction_UpgradeConfig.%s: %s%s",
 		key,
 		e.Field,
 		e.Reason,
 		cause)
 }
 
-var _ error = RouteAction_RetryPolicy_RetryPriorityValidationError{}
-
-// Validate checks the field values on
-// RouteAction_RetryPolicy_RetryHostPredicate with the rules defined in the
-// proto definition for this message. If any rules are violated, an error is returned.
-func (m *RouteAction_RetryPolicy_RetryHostPredicate) Validate() error {
-	if m == nil {
-		return nil
-	}
-
-	if len(m.GetName()) < 1 {
-		return RouteAction_RetryPolicy_RetryHostPredicateValidationError{
-			Field:  "Name",
-			Reason: "value length must be at least 1 bytes",
-		}
-	}
-
-	if v, ok := interface{}(m.GetConfig()).(interface{ Validate() error }); ok {
-		if err := v.Validate(); err != nil {
-			return RouteAction_RetryPolicy_RetryHostPredicateValidationError{
-				Field:  "Config",
-				Reason: "embedded message failed validation",
-				Cause:  err,
-			}
-		}
-	}
-
-	return nil
-}
-
-// RouteAction_RetryPolicy_RetryHostPredicateValidationError is the validation
-// error returned by RouteAction_RetryPolicy_RetryHostPredicate.Validate if
-// the designated constraints aren't met.
-type RouteAction_RetryPolicy_RetryHostPredicateValidationError struct {
-	Field  string
-	Reason string
-	Cause  error
-	Key    bool
-}
-
-// Error satisfies the builtin error interface
-func (e RouteAction_RetryPolicy_RetryHostPredicateValidationError) Error() string {
-	cause := ""
-	if e.Cause != nil {
-		cause = fmt.Sprintf(" | caused by: %v", e.Cause)
-	}
-
-	key := ""
-	if e.Key {
-		key = "key for "
-	}
-
-	return fmt.Sprintf(
-		"invalid %sRouteAction_RetryPolicy_RetryHostPredicate.%s: %s%s",
-		key,
-		e.Field,
-		e.Reason,
-		cause)
-}
-
-var _ error = RouteAction_RetryPolicy_RetryHostPredicateValidationError{}
+var _ error = RouteAction_UpgradeConfigValidationError{}
 
 // Validate checks the field values on RouteAction_HashPolicy_Header with the
 // rules defined in the proto definition for this message. If any rules are
@@ -2141,6 +2048,161 @@ func (e RouteAction_HashPolicy_ConnectionPropertiesValidationError) Error() stri
 }
 
 var _ error = RouteAction_HashPolicy_ConnectionPropertiesValidationError{}
+
+// Validate checks the field values on RetryPolicy_RetryPriority with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, an error is returned.
+func (m *RetryPolicy_RetryPriority) Validate() error {
+	if m == nil {
+		return nil
+	}
+
+	if len(m.GetName()) < 1 {
+		return RetryPolicy_RetryPriorityValidationError{
+			Field:  "Name",
+			Reason: "value length must be at least 1 bytes",
+		}
+	}
+
+	switch m.ConfigType.(type) {
+
+	case *RetryPolicy_RetryPriority_Config:
+
+		if v, ok := interface{}(m.GetConfig()).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return RetryPolicy_RetryPriorityValidationError{
+					Field:  "Config",
+					Reason: "embedded message failed validation",
+					Cause:  err,
+				}
+			}
+		}
+
+	case *RetryPolicy_RetryPriority_TypedConfig:
+
+		if v, ok := interface{}(m.GetTypedConfig()).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return RetryPolicy_RetryPriorityValidationError{
+					Field:  "TypedConfig",
+					Reason: "embedded message failed validation",
+					Cause:  err,
+				}
+			}
+		}
+
+	}
+
+	return nil
+}
+
+// RetryPolicy_RetryPriorityValidationError is the validation error returned by
+// RetryPolicy_RetryPriority.Validate if the designated constraints aren't met.
+type RetryPolicy_RetryPriorityValidationError struct {
+	Field  string
+	Reason string
+	Cause  error
+	Key    bool
+}
+
+// Error satisfies the builtin error interface
+func (e RetryPolicy_RetryPriorityValidationError) Error() string {
+	cause := ""
+	if e.Cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.Cause)
+	}
+
+	key := ""
+	if e.Key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sRetryPolicy_RetryPriority.%s: %s%s",
+		key,
+		e.Field,
+		e.Reason,
+		cause)
+}
+
+var _ error = RetryPolicy_RetryPriorityValidationError{}
+
+// Validate checks the field values on RetryPolicy_RetryHostPredicate with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, an error is returned.
+func (m *RetryPolicy_RetryHostPredicate) Validate() error {
+	if m == nil {
+		return nil
+	}
+
+	if len(m.GetName()) < 1 {
+		return RetryPolicy_RetryHostPredicateValidationError{
+			Field:  "Name",
+			Reason: "value length must be at least 1 bytes",
+		}
+	}
+
+	switch m.ConfigType.(type) {
+
+	case *RetryPolicy_RetryHostPredicate_Config:
+
+		if v, ok := interface{}(m.GetConfig()).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return RetryPolicy_RetryHostPredicateValidationError{
+					Field:  "Config",
+					Reason: "embedded message failed validation",
+					Cause:  err,
+				}
+			}
+		}
+
+	case *RetryPolicy_RetryHostPredicate_TypedConfig:
+
+		if v, ok := interface{}(m.GetTypedConfig()).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return RetryPolicy_RetryHostPredicateValidationError{
+					Field:  "TypedConfig",
+					Reason: "embedded message failed validation",
+					Cause:  err,
+				}
+			}
+		}
+
+	}
+
+	return nil
+}
+
+// RetryPolicy_RetryHostPredicateValidationError is the validation error
+// returned by RetryPolicy_RetryHostPredicate.Validate if the designated
+// constraints aren't met.
+type RetryPolicy_RetryHostPredicateValidationError struct {
+	Field  string
+	Reason string
+	Cause  error
+	Key    bool
+}
+
+// Error satisfies the builtin error interface
+func (e RetryPolicy_RetryHostPredicateValidationError) Error() string {
+	cause := ""
+	if e.Cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.Cause)
+	}
+
+	key := ""
+	if e.Key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sRetryPolicy_RetryHostPredicate.%s: %s%s",
+		key,
+		e.Field,
+		e.Reason,
+		cause)
+}
+
+var _ error = RetryPolicy_RetryHostPredicateValidationError{}
 
 // Validate checks the field values on RateLimit_Action with the rules defined
 // in the proto definition for this message. If any rules are violated, an

@@ -21,10 +21,13 @@ import (
 
 	"github.com/gogo/protobuf/types"
 
-	"istio.io/istio/galley/pkg/meshconfig"
-
 	mcp "istio.io/api/mcp/v1alpha1"
+	"istio.io/istio/galley/pkg/meshconfig"
+	"istio.io/istio/galley/pkg/runtime/groups"
+	"istio.io/istio/galley/pkg/runtime/publish"
 	"istio.io/istio/galley/pkg/runtime/resource"
+	"istio.io/istio/galley/pkg/testing/resources"
+	"istio.io/istio/pkg/mcp/snapshot"
 )
 
 var (
@@ -33,8 +36,6 @@ var (
 
 	cfg = &Config{Mesh: meshconfig.NewInMemory()}
 	fn  = resource.FullNameFromNamespaceAndName("", "fn")
-	fn2 = resource.FullNameFromNamespaceAndName("", "fn2")
-	fn3 = resource.FullNameFromNamespaceAndName("", "fn3")
 )
 
 func init() {
@@ -49,7 +50,7 @@ func init() {
 	}
 }
 
-func checkCreateTime(e *mcp.Envelope, want time.Time) error {
+func checkCreateTime(e *mcp.Resource, want time.Time) error {
 	got, err := types.TimestampFromProto(e.Metadata.CreateTime)
 	if err != nil {
 		return fmt.Errorf("failed to decode: %v", err)
@@ -60,16 +61,24 @@ func checkCreateTime(e *mcp.Envelope, want time.Time) error {
 	return nil
 }
 
+func TestStateName(t *testing.T) {
+	name := "testName"
+	s := newState(name, resources.TestSchema, cfg, publish.NewStrategyWithDefaults(), snapshot.New(groups.IndexFunction))
+	if s.name != name {
+		t.Fatalf("incorrect name: expected %s, found %s", name, s.name)
+	}
+}
+
 func TestState_DefaultSnapshot(t *testing.T) {
-	s := newState(testSchema, cfg)
+	s := newTestState()
 	sn := s.buildSnapshot()
 
-	for _, typeURL := range []string{emptyInfo.TypeURL.String(), structInfo.TypeURL.String()} {
-		if r := sn.Resources(typeURL); len(r) != 0 {
-			t.Fatalf("%s entry should have been registered in snapshot", typeURL)
+	for _, collection := range []string{resources.EmptyInfo.Collection.String(), resources.StructInfo.Collection.String()} {
+		if r := sn.Resources(collection); len(r) != 0 {
+			t.Fatalf("%s entry should have been registered in snapshot", collection)
 		}
-		if v := sn.Version(typeURL); v == "" {
-			t.Fatalf("%s version should have been available", typeURL)
+		if v := sn.Version(collection); v == "" {
+			t.Fatalf("%s version should have been available", collection)
 		}
 	}
 
@@ -77,149 +86,159 @@ func TestState_DefaultSnapshot(t *testing.T) {
 		Kind: resource.Added,
 		Entry: resource.Entry{
 			ID: resource.VersionedKey{
-				Version:    "v1",
-				Key:        resource.Key{TypeURL: emptyInfo.TypeURL, FullName: fn},
+				Version: "v1",
+				Key:     resource.Key{Collection: resources.EmptyInfo.Collection, FullName: fn},
+			},
+			Metadata: resource.Metadata{
 				CreateTime: fakeCreateTime0,
 			},
 			Item: &types.Any{},
 		},
 	}
 
-	changed := s.apply(e)
-	if !changed {
-		t.Fatal("calling apply should have changed state.")
+	s.Handle(e)
+	if s.pendingEvents != 1 {
+		t.Fatal("calling apply should have changed State.")
 	}
 
 	sn = s.buildSnapshot()
-	r := sn.Resources(emptyInfo.TypeURL.String())
+	r := sn.Resources(resources.EmptyInfo.Collection.String())
 	if len(r) != 1 {
 		t.Fatal("Entry should have been registered in snapshot")
 	}
 	if err := checkCreateTime(r[0], fakeCreateTime0); err != nil {
 		t.Fatalf("Bad create time: %v", err)
 	}
-	v := sn.Version(emptyInfo.TypeURL.String())
+	v := sn.Version(resources.EmptyInfo.Collection.String())
 	if v == "" {
 		t.Fatal("Version should have been available")
 	}
 }
 
 func TestState_Apply_Update(t *testing.T) {
-	s := newState(testSchema, cfg)
+	s := newTestState()
 
 	e := resource.Event{
 		Kind: resource.Added,
 		Entry: resource.Entry{
 			ID: resource.VersionedKey{
-				Version:    "v1",
-				Key:        resource.Key{TypeURL: emptyInfo.TypeURL, FullName: fn},
+				Version: "v1",
+				Key:     resource.Key{Collection: resources.EmptyInfo.Collection, FullName: fn},
+			},
+			Metadata: resource.Metadata{
 				CreateTime: fakeCreateTime0,
 			},
 			Item: &types.Any{},
 		},
 	}
 
-	changed := s.apply(e)
-	if !changed {
-		t.Fatal("calling apply should have changed state.")
+	s.Handle(e)
+	if s.pendingEvents != 1 {
+		t.Fatal("calling apply should have changed State.")
 	}
 
 	e = resource.Event{
 		Kind: resource.Updated,
 		Entry: resource.Entry{
 			ID: resource.VersionedKey{
-				Version:    "v2",
-				Key:        resource.Key{TypeURL: emptyInfo.TypeURL, FullName: fn},
+				Version: "v2",
+				Key:     resource.Key{Collection: resources.EmptyInfo.Collection, FullName: fn},
+			},
+			Metadata: resource.Metadata{
 				CreateTime: fakeCreateTime1,
 			},
 			Item: &types.Any{},
 		},
 	}
-	changed = s.apply(e)
-	if !changed {
-		t.Fatal("calling apply should have changed state.")
+	s.Handle(e)
+	if s.pendingEvents != 2 {
+		t.Fatal("calling apply should have changed State.")
 	}
 
 	sn := s.buildSnapshot()
-	r := sn.Resources(emptyInfo.TypeURL.String())
+	r := sn.Resources(resources.EmptyInfo.Collection.String())
 	if len(r) != 1 {
 		t.Fatal("Entry should have been registered in snapshot")
 	}
 	if err := checkCreateTime(r[0], fakeCreateTime1); err != nil {
 		t.Fatalf("Bad create time: %v", err)
 	}
-	v := sn.Version(emptyInfo.TypeURL.String())
+	v := sn.Version(resources.EmptyInfo.Collection.String())
 	if v == "" {
 		t.Fatal("Version should have been available")
 	}
 }
 
 func TestState_Apply_Update_SameVersion(t *testing.T) {
-	s := newState(testSchema, cfg)
+	s := newTestState()
 
 	e := resource.Event{
 		Kind: resource.Added,
 		Entry: resource.Entry{
 			ID: resource.VersionedKey{
-				Version:    "v1",
-				Key:        resource.Key{TypeURL: emptyInfo.TypeURL, FullName: fn},
+				Version: "v1",
+				Key:     resource.Key{Collection: resources.EmptyInfo.Collection, FullName: fn},
+			},
+			Metadata: resource.Metadata{
 				CreateTime: fakeCreateTime0,
 			},
 			Item: &types.Any{},
 		},
 	}
 
-	changed := s.apply(e)
-	if !changed {
-		t.Fatal("calling apply should have changed state.")
+	s.Handle(e)
+	if s.pendingEvents != 1 {
+		t.Fatal("calling apply should have changed State.")
 	}
 
 	e = resource.Event{
 		Kind: resource.Updated,
 		Entry: resource.Entry{
 			ID: resource.VersionedKey{
-				Version:    "v1",
-				Key:        resource.Key{TypeURL: emptyInfo.TypeURL, FullName: fn},
+				Version: "v1",
+				Key:     resource.Key{Collection: resources.EmptyInfo.Collection, FullName: fn},
+			},
+			Metadata: resource.Metadata{
 				CreateTime: fakeCreateTime1,
 			},
 			Item: &types.Any{},
 		},
 	}
-	s.apply(e)
+	s.Handle(e)
 
-	changed = s.apply(e)
-	if changed {
-		t.Fatal("calling apply should not have changed state.")
+	s.Handle(e)
+	if s.pendingEvents != 1 {
+		t.Fatal("calling apply should not have changed State.")
 	}
 }
 
 func TestState_Apply_Delete(t *testing.T) {
-	s := newState(testSchema, cfg)
+	s := newTestState()
 
 	e := resource.Event{
 		Kind: resource.Added,
 		Entry: resource.Entry{
-			ID:   resource.VersionedKey{Version: "v1", Key: resource.Key{TypeURL: emptyInfo.TypeURL, FullName: fn}},
+			ID:   resource.VersionedKey{Version: "v1", Key: resource.Key{Collection: resources.EmptyInfo.Collection, FullName: fn}},
 			Item: &types.Any{},
 		},
 	}
 
-	changed := s.apply(e)
-	if !changed {
-		t.Fatal("calling apply should have changed state.")
+	s.Handle(e)
+	if s.pendingEvents != 1 {
+		t.Fatal("calling apply should have changed State.")
 	}
 
 	e = resource.Event{
 		Kind: resource.Deleted,
 		Entry: resource.Entry{
-			ID: resource.VersionedKey{Version: "v2", Key: resource.Key{TypeURL: emptyInfo.TypeURL, FullName: fn}},
+			ID: resource.VersionedKey{Version: "v2", Key: resource.Key{Collection: resources.EmptyInfo.Collection, FullName: fn}},
 		},
 	}
-	s.apply(e)
+	s.Handle(e)
 
-	changed = s.apply(e)
-	if !changed {
-		t.Fatal("calling apply should have changed state.")
+	s.Handle(e)
+	if s.pendingEvents != 3 {
+		t.Fatal("calling apply should have changed State.")
 	}
 
 	sn := s.buildSnapshot()
@@ -230,18 +249,18 @@ func TestState_Apply_Delete(t *testing.T) {
 }
 
 func TestState_Apply_UnknownEventKind(t *testing.T) {
-	s := newState(testSchema, cfg)
+	s := newTestState()
 
 	e := resource.Event{
 		Kind: resource.EventKind(42),
 		Entry: resource.Entry{
-			ID:   resource.VersionedKey{Version: "v1", Key: resource.Key{TypeURL: emptyInfo.TypeURL, FullName: fn}},
+			ID:   resource.VersionedKey{Version: "v1", Key: resource.Key{Collection: resources.EmptyInfo.Collection, FullName: fn}},
 			Item: &types.Any{},
 		},
 	}
-	changed := s.apply(e)
-	if changed {
-		t.Fatal("calling apply should not have changed state.")
+	s.Handle(e)
+	if s.pendingEvents > 0 {
+		t.Fatal("calling apply should not have changed State.")
 	}
 
 	sn := s.buildSnapshot()
@@ -252,39 +271,44 @@ func TestState_Apply_UnknownEventKind(t *testing.T) {
 }
 
 func TestState_Apply_BrokenProto(t *testing.T) {
-	s := newState(testSchema, cfg)
+	s := newTestState()
 
 	e := resource.Event{
 		Kind: resource.Added,
 		Entry: resource.Entry{
-			ID:   resource.VersionedKey{Version: "v1", Key: resource.Key{TypeURL: emptyInfo.TypeURL, FullName: fn}},
+			ID:   resource.VersionedKey{Version: "v1", Key: resource.Key{Collection: resources.EmptyInfo.Collection, FullName: fn}},
 			Item: nil,
 		},
 	}
-	changed := s.apply(e)
-	if changed {
-		t.Fatal("calling apply should not have changed state.")
+	s.Handle(e)
+	if s.pendingEvents > 0 {
+		t.Fatal("calling apply should not have changed State.")
 	}
 
 	sn := s.buildSnapshot()
-	r := sn.Resources(emptyInfo.TypeURL.String())
+	r := sn.Resources(resources.EmptyInfo.Collection.String())
 	if len(r) != 0 {
 		t.Fatal("Entry should have not been in snapshot")
 	}
 }
 
 func TestState_String(t *testing.T) {
-	s := newState(testSchema, cfg)
+	s := newTestState()
 
 	e := resource.Event{
 		Kind: resource.Added,
 		Entry: resource.Entry{
-			ID:   resource.VersionedKey{Version: "v1", Key: resource.Key{TypeURL: emptyInfo.TypeURL, FullName: fn}},
+			ID:   resource.VersionedKey{Version: "v1", Key: resource.Key{Collection: resources.EmptyInfo.Collection, FullName: fn}},
 			Item: nil,
 		},
 	}
-	_ = s.apply(e)
+	s.Handle(e)
 
 	// Should not crash
 	_ = s.String()
+}
+
+func newTestState() *State {
+	return newState(groups.Default, resources.TestSchema, cfg, publish.NewStrategyWithDefaults(),
+		snapshot.New(groups.IndexFunction))
 }

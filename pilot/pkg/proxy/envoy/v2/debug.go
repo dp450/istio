@@ -45,7 +45,6 @@ func (s *DiscoveryServer) InitDebug(mux *http.ServeMux, sctl *aggregate.Controll
 		ClusterID:        "v2-debug",
 		Name:             serviceregistry.ServiceRegistry("memAdapter"),
 		ServiceDiscovery: s.MemRegistry,
-		ServiceAccounts:  s.MemRegistry,
 		Controller:       s.MemRegistry.controller,
 	})
 
@@ -59,7 +58,7 @@ func (s *DiscoveryServer) InitDebug(mux *http.ServeMux, sctl *aggregate.Controll
 	mux.HandleFunc("/debug/registryz", s.registryz)
 	mux.HandleFunc("/debug/endpointz", s.endpointz)
 	mux.HandleFunc("/debug/endpointShardz", s.endpointShardz)
-	mux.HandleFunc("/debug/workloadz", s.endpointShardz)
+	mux.HandleFunc("/debug/workloadz", s.workloadz)
 	mux.HandleFunc("/debug/configz", s.configz)
 
 	mux.HandleFunc("/debug/authenticationz", s.authenticationz)
@@ -168,7 +167,9 @@ func (s *DiscoveryServer) endpointShardz(w http.ResponseWriter, req *http.Reques
 func (s *DiscoveryServer) workloadz(w http.ResponseWriter, req *http.Request) {
 	_ = req.ParseForm()
 	w.Header().Add("Content-Type", "application/json")
+	s.mutex.RLock()
 	out, _ := json.MarshalIndent(s.WorkloadsByID, " ", " ")
+	s.mutex.RUnlock()
 	w.Write(out)
 }
 
@@ -347,7 +348,7 @@ func (s *DiscoveryServer) authenticationz(w http.ResponseWriter, req *http.Reque
 			}
 			info.ServerProtocol = authProtocolToString(serverProtocol)
 
-			destConfig := s.globalPushContext().DestinationRule(ss.Hostname)
+			destConfig := s.globalPushContext().DestinationRule(nil, ss)
 			info.DestinationRuleName = configName(destConfig)
 			if destConfig != nil {
 				rule := destConfig.Spec.(*networking.DestinationRule)
@@ -473,13 +474,14 @@ func (s *DiscoveryServer) ready(w http.ResponseWriter, req *http.Request) {
 	if s.ConfigController != nil {
 		if !s.ConfigController.HasSynced() {
 			w.WriteHeader(503)
+			return
 		}
 	}
 	w.WriteHeader(200)
 }
 
 // edsz implements a status and debug interface for EDS.
-// It is mapped to /debug/edsz on the monitor port (9093).
+// It is mapped to /debug/edsz on the monitor port (15014).
 func (s *DiscoveryServer) edsz(w http.ResponseWriter, req *http.Request) {
 	_ = req.ParseForm()
 	w.Header().Add("Content-Type", "application/json")

@@ -21,11 +21,13 @@ import (
 	"strings"
 
 	multierror "github.com/hashicorp/go-multierror"
-	"k8s.io/api/core/v1"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"istio.io/istio/pilot/pkg/model"
+	"istio.io/istio/pkg/spiffe"
+
+	v1 "k8s.io/api/core/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 const (
@@ -41,8 +43,10 @@ const (
 	// are allowed to run this service.
 	CanonicalServiceAccountsAnnotation = "alpha.istio.io/canonical-serviceaccounts"
 
-	// istioURIPrefix is the URI prefix in the Istio service account scheme
-	istioURIPrefix = "spiffe"
+	// ServiceExportAnnotation specifies the namespaces to which this service should be exported to.
+	//   "*" which is the default, indicates it is reachable within the mesh
+	//   "." indicates it is reachable within its namespace
+	ServiceExportAnnotation = "networking.istio.io/exportTo"
 
 	managementPortPrefix = "mgmt-"
 )
@@ -74,7 +78,7 @@ func convertService(svc v1.Service, domainSuffix string) *model.Service {
 
 	if svc.Spec.Type == v1.ServiceTypeExternalName && svc.Spec.ExternalName != "" {
 		external = svc.Spec.ExternalName
-		resolution = model.Passthrough
+		resolution = model.DNSLB
 		meshExternal = true
 	}
 
@@ -87,6 +91,7 @@ func convertService(svc v1.Service, domainSuffix string) *model.Service {
 		ports = append(ports, convertPort(port))
 	}
 
+	var exportTo map[model.Visibility]bool
 	serviceaccounts := make([]string, 0)
 	if svc.Annotations != nil {
 		if svc.Annotations[CanonicalServiceAccountsAnnotation] != "" {
@@ -96,7 +101,13 @@ func convertService(svc v1.Service, domainSuffix string) *model.Service {
 		}
 		if svc.Annotations[KubeServiceAccountsOnVMAnnotation] != "" {
 			for _, ksa := range strings.Split(svc.Annotations[KubeServiceAccountsOnVMAnnotation], ",") {
-				serviceaccounts = append(serviceaccounts, kubeToIstioServiceAccount(ksa, svc.Namespace, domainSuffix))
+				serviceaccounts = append(serviceaccounts, kubeToIstioServiceAccount(ksa, svc.Namespace))
+			}
+		}
+		if svc.Annotations[ServiceExportAnnotation] != "" {
+			exportTo = make(map[model.Visibility]bool)
+			for _, e := range strings.Split(svc.Annotations[ServiceExportAnnotation], ",") {
+				exportTo[model.Visibility(e)] = true
 			}
 		}
 	}
@@ -114,8 +125,28 @@ func convertService(svc v1.Service, domainSuffix string) *model.Service {
 			Name:      svc.Name,
 			Namespace: svc.Namespace,
 			UID:       fmt.Sprintf("istio://%s/services/%s", svc.Namespace, svc.Name),
+			ExportTo:  exportTo,
 		},
 	}
+}
+
+func externalNameServiceInstances(k8sSvc v1.Service, svc *model.Service) []*model.ServiceInstance {
+	if k8sSvc.Spec.Type != v1.ServiceTypeExternalName || k8sSvc.Spec.ExternalName == "" {
+		return nil
+	}
+	var out []*model.ServiceInstance
+	for _, portEntry := range svc.Ports {
+		out = append(out, &model.ServiceInstance{
+			Endpoint: model.NetworkEndpoint{
+				Address:     k8sSvc.Spec.ExternalName,
+				Port:        portEntry.Port,
+				ServicePort: portEntry,
+			},
+			Service: svc,
+			Labels:  k8sSvc.Labels,
+		})
+	}
+	return out
 }
 
 // serviceHostname produces FQDN for a k8s service
@@ -124,8 +155,8 @@ func serviceHostname(name, namespace, domainSuffix string) model.Hostname {
 }
 
 // kubeToIstioServiceAccount converts a K8s service account to an Istio service account
-func kubeToIstioServiceAccount(saname string, ns string, domain string) string {
-	return fmt.Sprintf("%v://%v/ns/%v/sa/%v", istioURIPrefix, domain, ns, saname)
+func kubeToIstioServiceAccount(saname string, ns string) string {
+	return spiffe.MustGenSpiffeURI(ns, saname)
 }
 
 // KeyFunc is the internal API key function that returns "namespace"/"name" or
@@ -157,6 +188,10 @@ func ConvertProtocol(name string, proto v1.Protocol) model.Protocol {
 		out = model.ProtocolUDP
 	case v1.ProtocolTCP:
 		prefix := name
+		if strings.HasPrefix(strings.ToLower(prefix), strings.ToLower(string(model.ProtocolGRPCWeb))) {
+			out = model.ProtocolGRPCWeb
+			break
+		}
 		i := strings.Index(name, "-")
 		if i >= 0 {
 			prefix = name[:i]

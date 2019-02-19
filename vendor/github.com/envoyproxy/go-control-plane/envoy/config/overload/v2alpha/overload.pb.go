@@ -34,17 +34,21 @@ type ResourceMonitor struct {
 	//   <envoy_api_msg_config.resource_monitor.injected_resource.v2alpha.InjectedResourceConfig>`
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Configuration for the resource monitor being instantiated.
-	Config               *types.Struct `protobuf:"bytes,2,opt,name=config" json:"config,omitempty"`
-	XXX_NoUnkeyedLiteral struct{}      `json:"-"`
-	XXX_unrecognized     []byte        `json:"-"`
-	XXX_sizecache        int32         `json:"-"`
+	//
+	// Types that are valid to be assigned to ConfigType:
+	//	*ResourceMonitor_Config
+	//	*ResourceMonitor_TypedConfig
+	ConfigType           isResourceMonitor_ConfigType `protobuf_oneof:"config_type"`
+	XXX_NoUnkeyedLiteral struct{}                     `json:"-"`
+	XXX_unrecognized     []byte                       `json:"-"`
+	XXX_sizecache        int32                        `json:"-"`
 }
 
 func (m *ResourceMonitor) Reset()         { *m = ResourceMonitor{} }
 func (m *ResourceMonitor) String() string { return proto.CompactTextString(m) }
 func (*ResourceMonitor) ProtoMessage()    {}
 func (*ResourceMonitor) Descriptor() ([]byte, []int) {
-	return fileDescriptor_overload_751efd3d33332450, []int{0}
+	return fileDescriptor_overload_a35da656a73be880, []int{0}
 }
 func (m *ResourceMonitor) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -73,6 +77,29 @@ func (m *ResourceMonitor) XXX_DiscardUnknown() {
 
 var xxx_messageInfo_ResourceMonitor proto.InternalMessageInfo
 
+type isResourceMonitor_ConfigType interface {
+	isResourceMonitor_ConfigType()
+	MarshalTo([]byte) (int, error)
+	Size() int
+}
+
+type ResourceMonitor_Config struct {
+	Config *types.Struct `protobuf:"bytes,2,opt,name=config,proto3,oneof"`
+}
+type ResourceMonitor_TypedConfig struct {
+	TypedConfig *types.Any `protobuf:"bytes,3,opt,name=typed_config,json=typedConfig,proto3,oneof"`
+}
+
+func (*ResourceMonitor_Config) isResourceMonitor_ConfigType()      {}
+func (*ResourceMonitor_TypedConfig) isResourceMonitor_ConfigType() {}
+
+func (m *ResourceMonitor) GetConfigType() isResourceMonitor_ConfigType {
+	if m != nil {
+		return m.ConfigType
+	}
+	return nil
+}
+
 func (m *ResourceMonitor) GetName() string {
 	if m != nil {
 		return m.Name
@@ -81,10 +108,91 @@ func (m *ResourceMonitor) GetName() string {
 }
 
 func (m *ResourceMonitor) GetConfig() *types.Struct {
-	if m != nil {
-		return m.Config
+	if x, ok := m.GetConfigType().(*ResourceMonitor_Config); ok {
+		return x.Config
 	}
 	return nil
+}
+
+func (m *ResourceMonitor) GetTypedConfig() *types.Any {
+	if x, ok := m.GetConfigType().(*ResourceMonitor_TypedConfig); ok {
+		return x.TypedConfig
+	}
+	return nil
+}
+
+// XXX_OneofFuncs is for the internal use of the proto package.
+func (*ResourceMonitor) XXX_OneofFuncs() (func(msg proto.Message, b *proto.Buffer) error, func(msg proto.Message, tag, wire int, b *proto.Buffer) (bool, error), func(msg proto.Message) (n int), []interface{}) {
+	return _ResourceMonitor_OneofMarshaler, _ResourceMonitor_OneofUnmarshaler, _ResourceMonitor_OneofSizer, []interface{}{
+		(*ResourceMonitor_Config)(nil),
+		(*ResourceMonitor_TypedConfig)(nil),
+	}
+}
+
+func _ResourceMonitor_OneofMarshaler(msg proto.Message, b *proto.Buffer) error {
+	m := msg.(*ResourceMonitor)
+	// config_type
+	switch x := m.ConfigType.(type) {
+	case *ResourceMonitor_Config:
+		_ = b.EncodeVarint(2<<3 | proto.WireBytes)
+		if err := b.EncodeMessage(x.Config); err != nil {
+			return err
+		}
+	case *ResourceMonitor_TypedConfig:
+		_ = b.EncodeVarint(3<<3 | proto.WireBytes)
+		if err := b.EncodeMessage(x.TypedConfig); err != nil {
+			return err
+		}
+	case nil:
+	default:
+		return fmt.Errorf("ResourceMonitor.ConfigType has unexpected type %T", x)
+	}
+	return nil
+}
+
+func _ResourceMonitor_OneofUnmarshaler(msg proto.Message, tag, wire int, b *proto.Buffer) (bool, error) {
+	m := msg.(*ResourceMonitor)
+	switch tag {
+	case 2: // config_type.config
+		if wire != proto.WireBytes {
+			return true, proto.ErrInternalBadWireType
+		}
+		msg := new(types.Struct)
+		err := b.DecodeMessage(msg)
+		m.ConfigType = &ResourceMonitor_Config{msg}
+		return true, err
+	case 3: // config_type.typed_config
+		if wire != proto.WireBytes {
+			return true, proto.ErrInternalBadWireType
+		}
+		msg := new(types.Any)
+		err := b.DecodeMessage(msg)
+		m.ConfigType = &ResourceMonitor_TypedConfig{msg}
+		return true, err
+	default:
+		return false, nil
+	}
+}
+
+func _ResourceMonitor_OneofSizer(msg proto.Message) (n int) {
+	m := msg.(*ResourceMonitor)
+	// config_type
+	switch x := m.ConfigType.(type) {
+	case *ResourceMonitor_Config:
+		s := proto.Size(x.Config)
+		n += 1 // tag and wire
+		n += proto.SizeVarint(uint64(s))
+		n += s
+	case *ResourceMonitor_TypedConfig:
+		s := proto.Size(x.TypedConfig)
+		n += 1 // tag and wire
+		n += proto.SizeVarint(uint64(s))
+		n += s
+	case nil:
+	default:
+		panic(fmt.Sprintf("proto: unexpected type %T in oneof", x))
+	}
+	return n
 }
 
 type ThresholdTrigger struct {
@@ -100,7 +208,7 @@ func (m *ThresholdTrigger) Reset()         { *m = ThresholdTrigger{} }
 func (m *ThresholdTrigger) String() string { return proto.CompactTextString(m) }
 func (*ThresholdTrigger) ProtoMessage()    {}
 func (*ThresholdTrigger) Descriptor() ([]byte, []int) {
-	return fileDescriptor_overload_751efd3d33332450, []int{1}
+	return fileDescriptor_overload_a35da656a73be880, []int{1}
 }
 func (m *ThresholdTrigger) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -151,7 +259,7 @@ func (m *Trigger) Reset()         { *m = Trigger{} }
 func (m *Trigger) String() string { return proto.CompactTextString(m) }
 func (*Trigger) ProtoMessage()    {}
 func (*Trigger) Descriptor() ([]byte, []int) {
-	return fileDescriptor_overload_751efd3d33332450, []int{2}
+	return fileDescriptor_overload_a35da656a73be880, []int{2}
 }
 func (m *Trigger) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -187,7 +295,7 @@ type isTrigger_TriggerOneof interface {
 }
 
 type Trigger_Threshold struct {
-	Threshold *ThresholdTrigger `protobuf:"bytes,2,opt,name=threshold,oneof"`
+	Threshold *ThresholdTrigger `protobuf:"bytes,2,opt,name=threshold,proto3,oneof"`
 }
 
 func (*Trigger_Threshold) isTrigger_TriggerOneof() {}
@@ -276,7 +384,7 @@ type OverloadAction struct {
 	// A set of triggers for this action. If any of these triggers fire the overload action
 	// is activated. Listeners are notified when the overload action transitions from
 	// inactivated to activated, or vice versa.
-	Triggers             []*Trigger `protobuf:"bytes,2,rep,name=triggers" json:"triggers,omitempty"`
+	Triggers             []*Trigger `protobuf:"bytes,2,rep,name=triggers,proto3" json:"triggers,omitempty"`
 	XXX_NoUnkeyedLiteral struct{}   `json:"-"`
 	XXX_unrecognized     []byte     `json:"-"`
 	XXX_sizecache        int32      `json:"-"`
@@ -286,7 +394,7 @@ func (m *OverloadAction) Reset()         { *m = OverloadAction{} }
 func (m *OverloadAction) String() string { return proto.CompactTextString(m) }
 func (*OverloadAction) ProtoMessage()    {}
 func (*OverloadAction) Descriptor() ([]byte, []int) {
-	return fileDescriptor_overload_751efd3d33332450, []int{3}
+	return fileDescriptor_overload_a35da656a73be880, []int{3}
 }
 func (m *OverloadAction) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -331,11 +439,11 @@ func (m *OverloadAction) GetTriggers() []*Trigger {
 
 type OverloadManager struct {
 	// The interval for refreshing resource usage.
-	RefreshInterval *types.Duration `protobuf:"bytes,1,opt,name=refresh_interval,json=refreshInterval" json:"refresh_interval,omitempty"`
+	RefreshInterval *types.Duration `protobuf:"bytes,1,opt,name=refresh_interval,json=refreshInterval,proto3" json:"refresh_interval,omitempty"`
 	// The set of resources to monitor.
-	ResourceMonitors []*ResourceMonitor `protobuf:"bytes,2,rep,name=resource_monitors,json=resourceMonitors" json:"resource_monitors,omitempty"`
+	ResourceMonitors []*ResourceMonitor `protobuf:"bytes,2,rep,name=resource_monitors,json=resourceMonitors,proto3" json:"resource_monitors,omitempty"`
 	// The set of overload actions.
-	Actions              []*OverloadAction `protobuf:"bytes,3,rep,name=actions" json:"actions,omitempty"`
+	Actions              []*OverloadAction `protobuf:"bytes,3,rep,name=actions,proto3" json:"actions,omitempty"`
 	XXX_NoUnkeyedLiteral struct{}          `json:"-"`
 	XXX_unrecognized     []byte            `json:"-"`
 	XXX_sizecache        int32             `json:"-"`
@@ -345,7 +453,7 @@ func (m *OverloadManager) Reset()         { *m = OverloadManager{} }
 func (m *OverloadManager) String() string { return proto.CompactTextString(m) }
 func (*OverloadManager) ProtoMessage()    {}
 func (*OverloadManager) Descriptor() ([]byte, []int) {
-	return fileDescriptor_overload_751efd3d33332450, []int{4}
+	return fileDescriptor_overload_a35da656a73be880, []int{4}
 }
 func (m *OverloadManager) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -423,15 +531,12 @@ func (m *ResourceMonitor) MarshalTo(dAtA []byte) (int, error) {
 		i = encodeVarintOverload(dAtA, i, uint64(len(m.Name)))
 		i += copy(dAtA[i:], m.Name)
 	}
-	if m.Config != nil {
-		dAtA[i] = 0x12
-		i++
-		i = encodeVarintOverload(dAtA, i, uint64(m.Config.Size()))
-		n1, err := m.Config.MarshalTo(dAtA[i:])
+	if m.ConfigType != nil {
+		nn1, err := m.ConfigType.MarshalTo(dAtA[i:])
 		if err != nil {
 			return 0, err
 		}
-		i += n1
+		i += nn1
 	}
 	if m.XXX_unrecognized != nil {
 		i += copy(dAtA[i:], m.XXX_unrecognized)
@@ -439,6 +544,34 @@ func (m *ResourceMonitor) MarshalTo(dAtA []byte) (int, error) {
 	return i, nil
 }
 
+func (m *ResourceMonitor_Config) MarshalTo(dAtA []byte) (int, error) {
+	i := 0
+	if m.Config != nil {
+		dAtA[i] = 0x12
+		i++
+		i = encodeVarintOverload(dAtA, i, uint64(m.Config.Size()))
+		n2, err := m.Config.MarshalTo(dAtA[i:])
+		if err != nil {
+			return 0, err
+		}
+		i += n2
+	}
+	return i, nil
+}
+func (m *ResourceMonitor_TypedConfig) MarshalTo(dAtA []byte) (int, error) {
+	i := 0
+	if m.TypedConfig != nil {
+		dAtA[i] = 0x1a
+		i++
+		i = encodeVarintOverload(dAtA, i, uint64(m.TypedConfig.Size()))
+		n3, err := m.TypedConfig.MarshalTo(dAtA[i:])
+		if err != nil {
+			return 0, err
+		}
+		i += n3
+	}
+	return i, nil
+}
 func (m *ThresholdTrigger) Marshal() (dAtA []byte, err error) {
 	size := m.Size()
 	dAtA = make([]byte, size)
@@ -488,11 +621,11 @@ func (m *Trigger) MarshalTo(dAtA []byte) (int, error) {
 		i += copy(dAtA[i:], m.Name)
 	}
 	if m.TriggerOneof != nil {
-		nn2, err := m.TriggerOneof.MarshalTo(dAtA[i:])
+		nn4, err := m.TriggerOneof.MarshalTo(dAtA[i:])
 		if err != nil {
 			return 0, err
 		}
-		i += nn2
+		i += nn4
 	}
 	if m.XXX_unrecognized != nil {
 		i += copy(dAtA[i:], m.XXX_unrecognized)
@@ -506,11 +639,11 @@ func (m *Trigger_Threshold) MarshalTo(dAtA []byte) (int, error) {
 		dAtA[i] = 0x12
 		i++
 		i = encodeVarintOverload(dAtA, i, uint64(m.Threshold.Size()))
-		n3, err := m.Threshold.MarshalTo(dAtA[i:])
+		n5, err := m.Threshold.MarshalTo(dAtA[i:])
 		if err != nil {
 			return 0, err
 		}
-		i += n3
+		i += n5
 	}
 	return i, nil
 }
@@ -572,11 +705,11 @@ func (m *OverloadManager) MarshalTo(dAtA []byte) (int, error) {
 		dAtA[i] = 0xa
 		i++
 		i = encodeVarintOverload(dAtA, i, uint64(m.RefreshInterval.Size()))
-		n4, err := m.RefreshInterval.MarshalTo(dAtA[i:])
+		n6, err := m.RefreshInterval.MarshalTo(dAtA[i:])
 		if err != nil {
 			return 0, err
 		}
-		i += n4
+		i += n6
 	}
 	if len(m.ResourceMonitors) > 0 {
 		for _, msg := range m.ResourceMonitors {
@@ -618,15 +751,17 @@ func encodeVarintOverload(dAtA []byte, offset int, v uint64) int {
 	return offset + 1
 }
 func (m *ResourceMonitor) Size() (n int) {
+	if m == nil {
+		return 0
+	}
 	var l int
 	_ = l
 	l = len(m.Name)
 	if l > 0 {
 		n += 1 + l + sovOverload(uint64(l))
 	}
-	if m.Config != nil {
-		l = m.Config.Size()
-		n += 1 + l + sovOverload(uint64(l))
+	if m.ConfigType != nil {
+		n += m.ConfigType.Size()
 	}
 	if m.XXX_unrecognized != nil {
 		n += len(m.XXX_unrecognized)
@@ -634,7 +769,34 @@ func (m *ResourceMonitor) Size() (n int) {
 	return n
 }
 
+func (m *ResourceMonitor_Config) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Config != nil {
+		l = m.Config.Size()
+		n += 1 + l + sovOverload(uint64(l))
+	}
+	return n
+}
+func (m *ResourceMonitor_TypedConfig) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.TypedConfig != nil {
+		l = m.TypedConfig.Size()
+		n += 1 + l + sovOverload(uint64(l))
+	}
+	return n
+}
 func (m *ThresholdTrigger) Size() (n int) {
+	if m == nil {
+		return 0
+	}
 	var l int
 	_ = l
 	if m.Value != 0 {
@@ -647,6 +809,9 @@ func (m *ThresholdTrigger) Size() (n int) {
 }
 
 func (m *Trigger) Size() (n int) {
+	if m == nil {
+		return 0
+	}
 	var l int
 	_ = l
 	l = len(m.Name)
@@ -663,6 +828,9 @@ func (m *Trigger) Size() (n int) {
 }
 
 func (m *Trigger_Threshold) Size() (n int) {
+	if m == nil {
+		return 0
+	}
 	var l int
 	_ = l
 	if m.Threshold != nil {
@@ -672,6 +840,9 @@ func (m *Trigger_Threshold) Size() (n int) {
 	return n
 }
 func (m *OverloadAction) Size() (n int) {
+	if m == nil {
+		return 0
+	}
 	var l int
 	_ = l
 	l = len(m.Name)
@@ -691,6 +862,9 @@ func (m *OverloadAction) Size() (n int) {
 }
 
 func (m *OverloadManager) Size() (n int) {
+	if m == nil {
+		return 0
+	}
 	var l int
 	_ = l
 	if m.RefreshInterval != nil {
@@ -812,12 +986,43 @@ func (m *ResourceMonitor) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.Config == nil {
-				m.Config = &types.Struct{}
-			}
-			if err := m.Config.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+			v := &types.Struct{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
+			m.ConfigType = &ResourceMonitor_Config{v}
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TypedConfig", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowOverload
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthOverload
+			}
+			postIndex := iNdEx + msglen
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &types.Any{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.ConfigType = &ResourceMonitor_TypedConfig{v}
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -1378,38 +1583,42 @@ var (
 )
 
 func init() {
-	proto.RegisterFile("envoy/config/overload/v2alpha/overload.proto", fileDescriptor_overload_751efd3d33332450)
+	proto.RegisterFile("envoy/config/overload/v2alpha/overload.proto", fileDescriptor_overload_a35da656a73be880)
 }
 
-var fileDescriptor_overload_751efd3d33332450 = []byte{
-	// 456 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x84, 0x92, 0x41, 0x8b, 0x13, 0x31,
-	0x14, 0xc7, 0x9b, 0xe9, 0x76, 0xbb, 0x7d, 0x45, 0x5b, 0x83, 0xba, 0xed, 0xe2, 0x96, 0x32, 0x07,
-	0xa9, 0xa0, 0x09, 0xd4, 0x0f, 0x20, 0x8e, 0x0b, 0xea, 0x61, 0x5d, 0x88, 0x7b, 0xf2, 0x52, 0xb2,
-	0x6d, 0x3a, 0x1d, 0x98, 0x4d, 0x96, 0x4c, 0x66, 0xc0, 0x93, 0x67, 0x8f, 0xfa, 0x69, 0xc4, 0xd3,
-	0x1e, 0x3d, 0xfa, 0x11, 0xa4, 0xb7, 0xde, 0xfc, 0x08, 0x32, 0x49, 0xa6, 0xd2, 0x0a, 0x4e, 0x4e,
-	0x43, 0xde, 0xff, 0xfd, 0xff, 0xbf, 0x79, 0x79, 0xf0, 0x54, 0xc8, 0x42, 0x7d, 0xa4, 0x73, 0x25,
-	0x97, 0x49, 0x4c, 0x55, 0x21, 0x74, 0xaa, 0xf8, 0x82, 0x16, 0x53, 0x9e, 0xde, 0xac, 0xf8, 0xf6,
-	0x82, 0xdc, 0x68, 0x65, 0x14, 0x3e, 0xb5, 0x6a, 0xe2, 0xd4, 0x64, 0x5b, 0xf4, 0xea, 0x93, 0x51,
-	0xac, 0x54, 0x9c, 0x0a, 0x6a, 0xc5, 0x57, 0xf9, 0x92, 0x2e, 0x72, 0xcd, 0x4d, 0xa2, 0xa4, 0x6b,
-	0x3f, 0x79, 0xb4, 0x5f, 0xcf, 0x8c, 0xce, 0xe7, 0xc6, 0x57, 0x8f, 0x0b, 0x9e, 0x26, 0x0b, 0x6e,
-	0x04, 0xad, 0x3e, 0x5c, 0x21, 0xe4, 0xd0, 0x63, 0x22, 0x53, 0xb9, 0x9e, 0x8b, 0x73, 0x25, 0x13,
-	0xa3, 0x34, 0x3e, 0x85, 0x03, 0xc9, 0xaf, 0xc5, 0x00, 0x8d, 0xd1, 0xa4, 0x13, 0x75, 0xbe, 0x6f,
-	0x6e, 0x9b, 0x07, 0x3a, 0x18, 0x23, 0x66, 0xaf, 0x31, 0x85, 0x43, 0xc7, 0x38, 0x08, 0xc6, 0x68,
-	0xd2, 0x9d, 0x1e, 0x13, 0x97, 0x4c, 0xaa, 0x64, 0xf2, 0xde, 0x26, 0x33, 0x2f, 0x0b, 0x5f, 0x41,
-	0xff, 0x72, 0xa5, 0x45, 0xb6, 0x52, 0xe9, 0xe2, 0x52, 0x27, 0x71, 0x2c, 0x34, 0xa6, 0xd0, 0x2a,
-	0x78, 0x9a, 0xbb, 0x10, 0x14, 0x0d, 0xcb, 0x90, 0xfb, 0x18, 0x0f, 0x1b, 0xf6, 0xfc, 0x7e, 0xf1,
-	0xa4, 0xe1, 0x0f, 0x73, 0xba, 0xf0, 0x0b, 0x82, 0x76, 0xd5, 0x5c, 0x03, 0x78, 0x01, 0x1d, 0x53,
-	0xe5, 0x79, 0x46, 0x4a, 0xfe, 0x3b, 0x5c, 0xb2, 0xcf, 0xf7, 0xa6, 0xc1, 0xfe, 0x7a, 0x44, 0x0f,
-	0xe1, 0x8e, 0x71, 0xf7, 0x33, 0x25, 0x85, 0x5a, 0xe2, 0xd6, 0xb7, 0xcd, 0x6d, 0x13, 0x85, 0x9f,
-	0xe0, 0xee, 0x85, 0x77, 0x7a, 0x39, 0x2f, 0x9f, 0xa2, 0x8e, 0xec, 0x1d, 0x1c, 0x79, 0xa3, 0x6c,
-	0x10, 0x8c, 0x9b, 0x93, 0xee, 0xf4, 0x71, 0x1d, 0x98, 0x93, 0x47, 0x50, 0x5a, 0xb5, 0xbe, 0xa2,
-	0xe0, 0x08, 0xb1, 0xad, 0x47, 0xf8, 0x39, 0x80, 0x5e, 0x45, 0x70, 0xce, 0x25, 0x2f, 0x87, 0x73,
-	0x06, 0x7d, 0x2d, 0x96, 0x25, 0xfa, 0x2c, 0x91, 0x46, 0xe8, 0x82, 0xa7, 0x16, 0xa7, 0x3b, 0x1d,
-	0xfe, 0xf3, 0x50, 0x67, 0x7e, 0x85, 0x58, 0xcf, 0xb7, 0xbc, 0xf5, 0x1d, 0x38, 0x86, 0x7b, 0xda,
-	0xaf, 0xc5, 0xec, 0xda, 0xed, 0x45, 0x85, 0x4c, 0x6a, 0x90, 0xf7, 0xd6, 0x69, 0x07, 0xbd, 0xaf,
-	0x77, 0x8b, 0x19, 0x7e, 0x0d, 0x6d, 0x6e, 0x67, 0x97, 0x0d, 0x9a, 0xd6, 0xfe, 0x59, 0x8d, 0xfd,
-	0xee, 0xc4, 0x59, 0xd5, 0x1d, 0x3d, 0xf8, 0xb1, 0x1e, 0xa1, 0x9f, 0xeb, 0x11, 0xfa, 0xb5, 0x1e,
-	0xa1, 0x0f, 0x6d, 0x2f, 0xbf, 0x3a, 0xb4, 0x3f, 0xfb, 0xfc, 0x4f, 0x00, 0x00, 0x00, 0xff, 0xff,
-	0xbb, 0x53, 0x0e, 0x70, 0x8c, 0x03, 0x00, 0x00,
+var fileDescriptor_overload_a35da656a73be880 = []byte{
+	// 515 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x84, 0x52, 0x3f, 0x6f, 0xd3, 0x40,
+	0x14, 0xcf, 0x39, 0x4d, 0xd3, 0x9c, 0x29, 0x09, 0xa7, 0x8a, 0x3a, 0x15, 0x8d, 0x22, 0x0f, 0x28,
+	0x08, 0xb0, 0xa5, 0x20, 0x06, 0x26, 0x54, 0x37, 0x12, 0x61, 0x28, 0x45, 0xa6, 0x13, 0x8b, 0x75,
+	0x8d, 0x2f, 0x8e, 0x25, 0xf7, 0x2e, 0x3a, 0x9f, 0x2d, 0x3c, 0x31, 0x33, 0xc2, 0x37, 0x61, 0x43,
+	0x4c, 0x1d, 0x19, 0xf9, 0x08, 0x28, 0x5b, 0x37, 0x3e, 0x02, 0xf2, 0xdd, 0x39, 0x28, 0xa9, 0x54,
+	0xdf, 0x74, 0x7a, 0xbf, 0x3f, 0xef, 0x77, 0xef, 0x1e, 0x7c, 0x46, 0x68, 0xce, 0x0a, 0x77, 0xc6,
+	0xe8, 0x3c, 0x8e, 0x5c, 0x96, 0x13, 0x9e, 0x30, 0x1c, 0xba, 0xf9, 0x18, 0x27, 0xcb, 0x05, 0x5e,
+	0x17, 0x9c, 0x25, 0x67, 0x82, 0xa1, 0x63, 0xc9, 0x76, 0x14, 0xdb, 0x59, 0x83, 0x9a, 0x7d, 0xd4,
+	0x8f, 0x18, 0x8b, 0x12, 0xe2, 0x4a, 0xf2, 0x65, 0x36, 0x77, 0x31, 0x2d, 0x94, 0xf2, 0x68, 0xb0,
+	0x0d, 0x85, 0x19, 0xc7, 0x22, 0x66, 0x54, 0xe3, 0x8f, 0xb6, 0xf1, 0x54, 0xf0, 0x6c, 0x26, 0x34,
+	0x7a, 0x98, 0xe3, 0x24, 0x0e, 0xb1, 0x20, 0x6e, 0x75, 0x51, 0x80, 0xfd, 0x1d, 0xc0, 0xae, 0x4f,
+	0x52, 0x96, 0xf1, 0x19, 0x39, 0x63, 0x34, 0x16, 0x8c, 0xa3, 0x63, 0xb8, 0x43, 0xf1, 0x15, 0xb1,
+	0xc0, 0x10, 0x8c, 0x3a, 0x5e, 0xe7, 0xe7, 0xcd, 0x75, 0x73, 0x87, 0x1b, 0x43, 0xe0, 0xcb, 0x32,
+	0x7a, 0x09, 0x77, 0x55, 0x7e, 0xcb, 0x18, 0x82, 0x91, 0x39, 0x3e, 0x74, 0x54, 0x6b, 0xa7, 0x6a,
+	0xed, 0x7c, 0x90, 0xad, 0x3d, 0xc3, 0x02, 0xd3, 0x86, 0xaf, 0xc9, 0xe8, 0x15, 0xbc, 0x27, 0x8a,
+	0x25, 0x09, 0x03, 0x2d, 0x6e, 0x4a, 0xf1, 0xc1, 0x2d, 0xf1, 0x09, 0x2d, 0xa6, 0x0d, 0xdf, 0x94,
+	0xdc, 0x53, 0x49, 0xf5, 0xf6, 0xa1, 0xa9, 0x44, 0x41, 0x59, 0xb5, 0x4f, 0x61, 0xef, 0x62, 0xc1,
+	0x49, 0xba, 0x60, 0x49, 0x78, 0xc1, 0xe3, 0x28, 0x22, 0x1c, 0xb9, 0xb0, 0x95, 0xe3, 0x24, 0x53,
+	0xa1, 0x81, 0xd7, 0x2f, 0x43, 0x1f, 0x20, 0xd4, 0x6f, 0xc8, 0xf3, 0xf7, 0xf5, 0x93, 0x86, 0x3e,
+	0xbe, 0xe2, 0xd9, 0x5f, 0x01, 0x6c, 0x57, 0xe2, 0x9a, 0x07, 0x9f, 0xc3, 0x8e, 0xa8, 0xfa, 0xe9,
+	0x37, 0xbb, 0xce, 0x9d, 0x1f, 0xe9, 0x6c, 0xe7, 0x9b, 0x36, 0xfc, 0xff, 0x1e, 0xde, 0x43, 0xb8,
+	0x2f, 0x54, 0x3d, 0x60, 0x94, 0xb0, 0x39, 0x6a, 0xfd, 0xb8, 0xb9, 0x6e, 0x02, 0xfb, 0x33, 0xbc,
+	0x7f, 0xae, 0x9d, 0x4e, 0x66, 0xe5, 0xdf, 0xd6, 0x25, 0x7b, 0x07, 0xf7, 0xb4, 0x51, 0x6a, 0x19,
+	0xc3, 0xe6, 0xc8, 0x1c, 0x3f, 0xae, 0x0b, 0xa6, 0xe8, 0x1e, 0x2c, 0xad, 0x5a, 0xdf, 0x80, 0xb1,
+	0x07, 0xfc, 0xb5, 0x87, 0xfd, 0xc5, 0x80, 0xdd, 0x2a, 0xc1, 0x19, 0xa6, 0xb8, 0x1c, 0xce, 0x04,
+	0xf6, 0x38, 0x99, 0x97, 0xd1, 0x83, 0x98, 0x0a, 0xc2, 0x73, 0x9c, 0xc8, 0x38, 0xe6, 0xb8, 0x7f,
+	0xeb, 0xef, 0x26, 0x7a, 0x27, 0xfd, 0xae, 0x96, 0xbc, 0xd5, 0x0a, 0x14, 0xc1, 0x07, 0x5c, 0xaf,
+	0x59, 0x70, 0xa5, 0xf6, 0xac, 0x8a, 0xec, 0xd4, 0x44, 0xde, 0x5a, 0xcf, 0x8d, 0xe8, 0x3d, 0xbe,
+	0x09, 0xa6, 0xe8, 0x0d, 0x6c, 0x63, 0x39, 0xbb, 0xd4, 0x6a, 0x4a, 0xfb, 0xe7, 0x35, 0xf6, 0x9b,
+	0x13, 0xf7, 0x2b, 0xb5, 0x37, 0xf9, 0xb5, 0x1a, 0x80, 0xdf, 0xab, 0x01, 0xf8, 0xb3, 0x1a, 0x00,
+	0xf8, 0x34, 0x66, 0xca, 0x67, 0xc9, 0xd9, 0xa7, 0xe2, 0x6e, 0xcb, 0xf7, 0xe0, 0x63, 0x5b, 0x5f,
+	0x2f, 0x77, 0xe5, 0x6c, 0x5e, 0xfc, 0x0b, 0x00, 0x00, 0xff, 0xff, 0x9f, 0x05, 0x94, 0x09, 0x27,
+	0x04, 0x00, 0x00,
 }

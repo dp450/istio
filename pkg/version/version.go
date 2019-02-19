@@ -30,6 +30,7 @@ var (
 	buildHost        = "unknown"
 	buildDockerHub   = "unknown"
 	buildStatus      = "unknown"
+	buildTag         = "unknown"
 )
 
 // BuildInfo describes version information about the binary build.
@@ -41,6 +42,7 @@ type BuildInfo struct {
 	GolangVersion string `json:"golang_version"`
 	DockerHub     string `json:"hub"`
 	BuildStatus   string `json:"status"`
+	GitTag        string `json:"tag"`
 }
 
 // ServerInfo contains the version for a single control plane component
@@ -81,6 +83,8 @@ func NewBuildInfoFromOldString(oldOutput string) (BuildInfo, error) {
 				res.GolangVersion = value
 			case "BuildStatus":
 				res.BuildStatus = value
+			case "GitTag":
+				res.GitTag = value
 			default:
 				return BuildInfo{}, fmt.Errorf("invalid BuildInfo input, field '%s' is not valid", fields[0])
 			}
@@ -128,5 +132,6 @@ func init() {
 		GolangVersion: runtime.Version(),
 		DockerHub:     buildDockerHub,
 		BuildStatus:   buildStatus,
+		GitTag:        buildTag,
 	}
 }

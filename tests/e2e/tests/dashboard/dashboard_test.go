@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/api"
-	"github.com/prometheus/client_golang/api/prometheus/v1"
+	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
 
 	"fortio.org/fortio/fhttp"
@@ -42,13 +42,13 @@ import (
 )
 
 const (
-	istioMeshDashboard   = "install/kubernetes/helm/subcharts/grafana/dashboards/istio-mesh-dashboard.json"
-	serviceDashboard     = "install/kubernetes/helm/subcharts/grafana/dashboards/istio-service-dashboard.json"
-	workloadDashboard    = "install/kubernetes/helm/subcharts/grafana/dashboards/istio-workload-dashboard.json"
-	performanceDashboard = "install/kubernetes/helm/subcharts/grafana/dashboards/istio-performance-dashboard.json"
-	mixerDashboard       = "install/kubernetes/helm/subcharts/grafana/dashboards/mixer-dashboard.json"
-	pilotDashboard       = "install/kubernetes/helm/subcharts/grafana/dashboards/pilot-dashboard.json"
-	galleyDashboard      = "install/kubernetes/helm/subcharts/grafana/dashboards/galley-dashboard.json"
+	istioMeshDashboard   = "install/kubernetes/helm/istio/charts/grafana/dashboards/istio-mesh-dashboard.json"
+	serviceDashboard     = "install/kubernetes/helm/istio/charts/grafana/dashboards/istio-service-dashboard.json"
+	workloadDashboard    = "install/kubernetes/helm/istio/charts/grafana/dashboards/istio-workload-dashboard.json"
+	performanceDashboard = "install/kubernetes/helm/istio/charts/grafana/dashboards/istio-performance-dashboard.json"
+	mixerDashboard       = "install/kubernetes/helm/istio/charts/grafana/dashboards/mixer-dashboard.json"
+	pilotDashboard       = "install/kubernetes/helm/istio/charts/grafana/dashboards/pilot-dashboard.json"
+	galleyDashboard      = "install/kubernetes/helm/istio/charts/grafana/dashboards/galley-dashboard.json"
 	fortioYaml           = "tests/e2e/tests/dashboard/fortio-rules.yaml"
 	netcatYaml           = "tests/e2e/tests/dashboard/netcat-rules.yaml"
 
@@ -136,9 +136,9 @@ func TestDashboards(t *testing.T) {
 		{"Istio", istioMeshDashboard, func(queries []string) []string { return queries }, nil, "istio-telemetry", 42422},
 		{"Service", serviceDashboard, func(queries []string) []string { return queries }, nil, "istio-telemetry", 42422},
 		{"Workload", workloadDashboard, func(queries []string) []string { return queries }, workloadReplacer, "istio-telemetry", 42422},
-		{"Mixer", mixerDashboard, mixerQueryFilterFn, nil, "istio-telemetry", 9093},
-		{"Pilot", pilotDashboard, pilotQueryFilterFn, nil, "istio-pilot", 9093},
-		{"Galley", galleyDashboard, galleyQueryFilterFn, nil, "istio-galley", 9093},
+		{"Mixer", mixerDashboard, mixerQueryFilterFn, nil, "istio-telemetry", 15014},
+		{"Pilot", pilotDashboard, pilotQueryFilterFn, nil, "istio-pilot", 15014},
+		{"Galley", galleyDashboard, galleyQueryFilterFn, nil, "istio-galley", 15014},
 		{"Performance", performanceDashboard, performanceQueryFilterFn, nil, "istio-telemetry", 42422},
 	}
 
@@ -322,6 +322,28 @@ func galleyQueryFilterFn(queries []string) []string {
 		if strings.Contains(query, "validation_http_error") {
 			continue
 		}
+		if strings.Contains(query, "event_error_total") {
+			continue
+		}
+		if strings.Contains(query, "converter_failure_total") {
+			continue
+		}
+		if strings.Contains(query, "request_nacks_total") {
+			continue
+		}
+		// Since Galley doesn't receive traffic initially and metrics don't export if they have zero
+		// values, we filter these metrics out. They should ideally be tested.
+		// https://github.com/istio/istio/issues/9674
+		if strings.Contains(query, "server_clients_total") {
+			continue
+		}
+		if strings.Contains(query, "request_acks_total") {
+			continue
+		}
+		// This is a frequent source of flakes in e2e-dashboard test. Remove from checked queries for now.
+		if strings.Contains(query, "runtime_strategy_timer_quiesce_reached_total") {
+			continue
+		}
 		filtered = append(filtered, query)
 	}
 	return filtered
@@ -433,7 +455,7 @@ func (p *promProxy) portForward(labelSelector string, localPort uint16, remotePo
 		PodNamespace:  p.namespace,
 		LabelSelector: labelSelector,
 	}
-	accessor, err := kube.NewAccessor(tc.Kube.KubeConfig)
+	accessor, err := kube.NewAccessor(tc.Kube.KubeConfig, "")
 	if err != nil {
 		log.Errorf("Error creating accessor: %v", err)
 		return err
@@ -489,7 +511,7 @@ func podList(namespace string, selector string) ([]string, error) {
 }
 
 func allowPrometheusSync() {
-	time.Sleep(1 * time.Minute)
+	time.Sleep(15 * time.Second)
 }
 
 var waitDurations = []time.Duration{0, 5 * time.Second, 15 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute}
@@ -528,7 +550,7 @@ func waitForMixerProxyReadiness() error {
 				PodName:      pod,
 			}
 
-			accessor, err := kube.NewAccessor(tc.Kube.KubeConfig)
+			accessor, err := kube.NewAccessor(tc.Kube.KubeConfig, "")
 			if err != nil {
 				log.Errorf("Error creating accessor: %v", err)
 				return err
@@ -568,6 +590,8 @@ func waitForMetricsInPrometheus(t *testing.T) error {
 		`round(sum(irate(istio_requests_total[1m])), 0.001)`,
 		`sum(irate(istio_requests_total{response_code=~"4.*"}[1m]))`,
 		`sum(irate(istio_requests_total{response_code=~"5.*"}[1m]))`,
+		`istio_tcp_received_bytes_total{reporter="source"}`,
+		`istio_tcp_sent_bytes_total{reporter="source"}`,
 	}
 
 	for _, duration := range waitDurations {

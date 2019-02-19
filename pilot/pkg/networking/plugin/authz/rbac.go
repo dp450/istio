@@ -27,6 +27,8 @@ import (
 	"sort"
 	"strings"
 
+	"istio.io/istio/pkg/spiffe"
+
 	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	"github.com/envoyproxy/go-control-plane/envoy/api/v2/listener"
 	http_config "github.com/envoyproxy/go-control-plane/envoy/config/filter/http/rbac/v2"
@@ -81,7 +83,7 @@ const (
 	methodHeader = ":method"
 	pathHeader   = ":path"
 
-	spiffePrefix = "spiffe://"
+	spiffePrefix = spiffe.Scheme + "://"
 )
 
 // serviceMetadata is a collection of different kind of information about a service.
@@ -192,12 +194,12 @@ func generateMetadataStringMatcher(key string, v *metadata.StringMatcher, filter
 }
 
 // generateMetadataListMatcher generates a metadata list matcher for the given path keys and value.
-func generateMetadataListMatcher(keys []string, v string) *metadata.MetadataMatcher {
+func generateMetadataListMatcher(filter string, keys []string, v string) *metadata.MetadataMatcher {
 	listMatcher := &metadata.ListMatcher{
 		MatchPattern: &metadata.ListMatcher_OneOf{
 			OneOf: &metadata.ValueMatcher{
 				MatchPattern: &metadata.ValueMatcher_StringMatch{
-					StringMatch: createStringMatcher(v, false /* forceRegexPattern */, false /* forTCPFilter */),
+					StringMatch: createStringMatcher(v, false /* forceRegexPattern */, false /* prependSpiffe */),
 				},
 			},
 		},
@@ -211,7 +213,7 @@ func generateMetadataListMatcher(keys []string, v string) *metadata.MetadataMatc
 	}
 
 	return &metadata.MetadataMatcher{
-		Filter: authn.AuthnFilterName,
+		Filter: filter,
 		Path:   paths,
 		Value: &metadata.ValueMatcher{
 			MatchPattern: &metadata.ValueMatcher_ListMatch{
@@ -221,9 +223,9 @@ func generateMetadataListMatcher(keys []string, v string) *metadata.MetadataMatc
 	}
 }
 
-func createStringMatcher(v string, forceRegexPattern, forTCPFilter bool) *metadata.StringMatcher {
+func createStringMatcher(v string, forceRegexPattern, prependSpiffe bool) *metadata.StringMatcher {
 	extraPrefix := ""
-	if forTCPFilter {
+	if prependSpiffe {
 		extraPrefix = spiffePrefix
 	}
 	var stringMatcher *metadata.StringMatcher
@@ -258,13 +260,13 @@ func createStringMatcher(v string, forceRegexPattern, forTCPFilter bool) *metada
 }
 
 // createDynamicMetadataMatcher creates a MetadataMatcher for the given key, value pair.
-func createDynamicMetadataMatcher(k, v string) *metadata.MetadataMatcher {
+func createDynamicMetadataMatcher(k, v string, forTCPFilter bool) *metadata.MetadataMatcher {
 	filterName := authn.AuthnFilterName
 	if k == attrSrcNamespace {
 		// Proxy doesn't have attrSrcNamespace directly, but the information is encoded in attrSrcPrincipal
 		// with format: cluster.local/ns/{NAMESPACE}/sa/{SERVICE-ACCOUNT}.
 		v = fmt.Sprintf(`*/ns/%s/*`, v)
-		stringMatcher := createStringMatcher(v, true /* forceRegexPattern */, false /* forTCPFilter */)
+		stringMatcher := createStringMatcher(v, true /* forceRegexPattern */, false /* prependSpiffe */)
 		return generateMetadataStringMatcher(attrSrcPrincipal, stringMatcher, filterName)
 	} else if strings.HasPrefix(k, attrRequestClaims) {
 		claim, err := extractNameInBrackets(strings.TrimPrefix(k, attrRequestClaims))
@@ -273,13 +275,17 @@ func createDynamicMetadataMatcher(k, v string) *metadata.MetadataMatcher {
 		}
 		// Generate a metadata list matcher for the given path keys and value.
 		// On proxy side, the value should be of list type.
-		return generateMetadataListMatcher([]string{attrRequestClaims, claim}, v)
+		return generateMetadataListMatcher(authn.AuthnFilterName, []string{attrRequestClaims, claim}, v)
 	}
 
-	stringMatcher := createStringMatcher(v, false /* forceRegexPattern */, false /* forTCPFilter */)
+	stringMatcher := createStringMatcher(v, false /* forceRegexPattern */, false /* prependSpiffe */)
 	if !attributesFromAuthN(k) {
 		rbacLog.Debugf("generated dynamic metadata matcher for custom property: %s", k)
-		filterName = rbacHTTPFilterName
+		if forTCPFilter {
+			filterName = rbacTCPFilterName
+		} else {
+			filterName = rbacHTTPFilterName
+		}
 	}
 	return generateMetadataStringMatcher(k, stringMatcher, filterName)
 }
@@ -308,7 +314,7 @@ func (Plugin) OnInboundFilterChains(in *plugin.InputParams) []plugin.FilterChain
 // on the inbound path
 func (Plugin) OnInboundListener(in *plugin.InputParams, mutable *plugin.MutableObjects) error {
 	// Only supports sidecar proxy for now.
-	if in.Node.Type != model.Sidecar {
+	if in.Node.Type != model.SidecarProxy {
 		return nil
 	}
 
@@ -329,7 +335,7 @@ func (Plugin) OnInboundListener(in *plugin.InputParams, mutable *plugin.MutableO
 	switch in.ListenerProtocol {
 	case plugin.ListenerProtocolTCP:
 		rbacLog.Debugf("building tcp filter config for %v", *service)
-		filter := buildTCPFilter(service, option)
+		filter := buildTCPFilter(service, option, util.IsProxyVersionGE11(in.Node))
 		if filter != nil {
 			rbacLog.Infof("built tcp filter config for %s", service.name)
 			for cnum := range mutable.FilterChains {
@@ -338,7 +344,7 @@ func (Plugin) OnInboundListener(in *plugin.InputParams, mutable *plugin.MutableO
 		}
 	case plugin.ListenerProtocolHTTP:
 		rbacLog.Debugf("building http filter config for %v", *service)
-		filter := buildHTTPFilter(service, option)
+		filter := buildHTTPFilter(service, option, util.IsProxyVersionGE11(in.Node))
 		if filter != nil {
 			rbacLog.Infof("built http filter config for %s", service.name)
 			for cnum := range mutable.FilterChains {
@@ -410,33 +416,47 @@ func isRbacEnabled(svc string, ns string, authzPolicies *model.AuthorizationPoli
 	}
 }
 
-func buildTCPFilter(service *serviceMetadata, option rbacOption) *listener.Filter {
+func buildTCPFilter(service *serviceMetadata, option rbacOption, is11 bool) *listener.Filter {
 	option.forTCPFilter = true
 	// The result of convertRbacRulesToFilterConfig() is wrapped in a config for http filter, here we
 	// need to extract the generated rules and put in a config for network filter.
 	config := convertRbacRulesToFilterConfig(service, option)
 	tcpConfig := listener.Filter{
 		Name: rbacTCPFilterName,
-		Config: util.MessageToStruct(&network_config.RBAC{
-			Rules:       config.Rules,
-			ShadowRules: config.ShadowRules,
-			StatPrefix:  rbacTCPFilterStatPrefix,
-		}),
 	}
+	rbacConfig := &network_config.RBAC{
+		Rules:       config.Rules,
+		ShadowRules: config.ShadowRules,
+		StatPrefix:  rbacTCPFilterStatPrefix,
+	}
+
+	if is11 {
+		tcpConfig.ConfigType = &listener.Filter_TypedConfig{TypedConfig: util.MessageToAny(rbacConfig)}
+	} else {
+		tcpConfig.ConfigType = &listener.Filter_Config{Config: util.MessageToStruct(rbacConfig)}
+	}
+
 	rbacLog.Debugf("generated tcp filter config: %v", tcpConfig)
 	return &tcpConfig
 }
 
 // buildHTTPFilter builds the RBAC http filter that enforces the access control to the specified
 // service which is co-located with the sidecar proxy.
-func buildHTTPFilter(service *serviceMetadata, option rbacOption) *http_conn.HttpFilter {
+func buildHTTPFilter(service *serviceMetadata, option rbacOption, is11 bool) *http_conn.HttpFilter {
 	option.forTCPFilter = false
 	config := convertRbacRulesToFilterConfig(service, option)
 	rbacLog.Debugf("generated http filter config: %v", *config)
-	return &http_conn.HttpFilter{
-		Name:   rbacHTTPFilterName,
-		Config: util.MessageToStruct(config),
+	out := &http_conn.HttpFilter{
+		Name: rbacHTTPFilterName,
 	}
+
+	if is11 {
+		out.ConfigType = &http_conn.HttpFilter_TypedConfig{TypedConfig: util.MessageToAny(config)}
+	} else {
+		out.ConfigType = &http_conn.HttpFilter_Config{Config: util.MessageToStruct(config)}
+	}
+
+	return out
 }
 
 // convertRbacRulesToFilterConfig converts the current RBAC rules (ServiceRole and ServiceRoleBindings)
@@ -731,7 +751,27 @@ func permissionForKeyValues(key string, values []string) *policyproto.Permission
 		converter = func(v string) (*policyproto.Permission, error) {
 			return &policyproto.Permission{
 				Rule: &policyproto.Permission_RequestedServerName{
-					RequestedServerName: createStringMatcher(v, false /* forceRegexPattern */, false /* forTCPFilter */),
+					RequestedServerName: createStringMatcher(v, false /* forceRegexPattern */, false /* prependSpiffe */),
+				},
+			}, nil
+		}
+	case strings.HasPrefix(key, "experimental.envoy.filters.") && isKeyBinary(key):
+		// Split key of format experimental.envoy.filters.a.b[c] to [envoy.filters.a.b, c].
+		parts := strings.SplitN(strings.TrimSuffix(strings.TrimPrefix(key, "experimental."), "]"), "[", 2)
+		converter = func(v string) (*policyproto.Permission, error) {
+			// If value is of format [v], create a list matcher.
+			// Else, if value is of format v, create a string matcher.
+			var metadataMatcher *metadata.MetadataMatcher
+			if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
+				metadataMatcher = generateMetadataListMatcher(parts[0], parts[1:], strings.Trim(v, "[]"))
+			} else {
+				stringMatcher := createStringMatcher(v, false /* forceRegexPattern */, false /* prependSpiffe */)
+				metadataMatcher = generateMetadataStringMatcher(parts[1], stringMatcher, parts[0])
+			}
+
+			return &policyproto.Permission{
+				Rule: &policyproto.Permission_Metadata{
+					Metadata: metadataMatcher,
 				},
 			}, nil
 		}
@@ -796,7 +836,7 @@ func principalForKeyValue(key, value string, forTCPFilter bool) *policyproto.Pri
 			},
 		}
 	default:
-		if matcher := createDynamicMetadataMatcher(key, value); matcher != nil {
+		if matcher := createDynamicMetadataMatcher(key, value, forTCPFilter); matcher != nil {
 			return &policyproto.Principal{
 				Identifier: &policyproto.Principal_Metadata{
 					Metadata: matcher,

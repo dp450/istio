@@ -41,7 +41,7 @@ syntax = "proto3";
 //    method: request.method | "post"
 //    properties:
 //      version: destination.labels[version] | ""
-//  ```
+// ```
 //
 // The `authorization` template defines parameters for performing policy
 // enforcement within Istio. It is primarily concerned with enabling Mixer
@@ -91,6 +91,8 @@ message HandleAuthorizationRequest {
     // Id to dedupe identical requests from Mixer.
     string dedup_id = 3;
 }
+
+
 
 
 

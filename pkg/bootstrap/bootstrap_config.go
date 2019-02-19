@@ -27,6 +27,8 @@ import (
 	"text/template"
 	"time"
 
+	"istio.io/istio/pkg/spiffe"
+
 	"github.com/gogo/protobuf/types"
 
 	meshconfig "istio.io/api/mesh/v1alpha1"
@@ -48,12 +50,27 @@ const (
 	IstioMetaJSONPrefix = "ISTIO_METAJSON_"
 
 	lightstepAccessTokenBase = "lightstep_access_token.txt"
+
+	// statsPatterns gives the developer control over Envoy stats collection
+	EnvoyStatsMatcherInclusionPatterns = "sidecar.istio.io/v1alpha1/statsInclusionPrefixes"
 )
 
 var (
-	defaultPilotSan = []string{
-		"spiffe://cluster.local/ns/istio-system/sa/istio-pilot-service-account"}
+	// default value for EnvoyStatsMatcherInclusionPatterns
+	defaultEnvoyStatsMatcherInclusionPatterns = []string{
+		"cluster_manager",
+		"listener_manager",
+		"http_mixer_filter",
+		"tcp_mixer_filter",
+		"server",
+		"cluster.xds-grpc",
+	}
 )
+
+func defaultPilotSan() []string {
+	return []string{
+		spiffe.MustGenSpiffeURI("istio-system", "istio-pilot-service-account")}
+}
 
 func configFile(config string, epoch int) string {
 	return path.Join(config, fmt.Sprintf(EpochFileTemplate, epoch))
@@ -102,7 +119,6 @@ func RunProxy(config *meshconfig.ProxyConfig, node string, epoch int, configFnam
 
 	// spin up a new Envoy process
 	args := createArgs(config, node, configFname, epoch, cliarg)
-	args = append(args, "--v2-config-only")
 
 	/* #nosec */
 	cmd := exec.Command(config.BinaryPath, args...)
@@ -176,13 +192,14 @@ func getNodeMetaData(envs []string) map[string]string {
 		}
 	}, meta)
 	meta["istio"] = "sidecar"
+
 	return meta
 }
 
 // WriteBootstrap generates an envoy config based on config and epoch, and returns the filename.
 // TODO: in v2 some of the LDS ports (port, http_port) should be configured in the bootstrap.
 func WriteBootstrap(config *meshconfig.ProxyConfig, node string, epoch int, pilotSAN []string,
-	opts map[string]interface{}, localEnv []string) (string, error) {
+	opts map[string]interface{}, localEnv []string, nodeIPs []string) (string, error) {
 	if opts == nil {
 		opts = map[string]interface{}{}
 	}
@@ -218,7 +235,7 @@ func WriteBootstrap(config *meshconfig.ProxyConfig, node string, epoch int, pilo
 	opts["config"] = config
 
 	if pilotSAN == nil {
-		pilotSAN = defaultPilotSan
+		pilotSAN = defaultPilotSan()
 	}
 	opts["pilot_SAN"] = pilotSAN
 
@@ -229,6 +246,16 @@ func WriteBootstrap(config *meshconfig.ProxyConfig, node string, epoch int, pilo
 
 	// Support passing extra info from node environment as metadata
 	meta := getNodeMetaData(localEnv)
+
+	if inclusionPatterns, ok := meta[EnvoyStatsMatcherInclusionPatterns]; ok {
+		opts["inclusionPatterns"] = strings.Split(inclusionPatterns, ",")
+	} else {
+		opts["inclusionPatterns"] = defaultEnvoyStatsMatcherInclusionPatterns
+	}
+
+	// Support multiple network interfaces
+	meta["ISTIO_META_INSTANCE_IPS"] = strings.Join(nodeIPs, ",")
+
 	ba, err := json.Marshal(meta)
 	if err != nil {
 		return "", err
@@ -244,6 +271,9 @@ func WriteBootstrap(config *meshconfig.ProxyConfig, node string, epoch int, pilo
 		return "", err
 	}
 	StoreHostPort(h, p, "pilot_grpc_address", opts)
+
+	// Pass unmodified config.DiscoveryAddress for Google gRPC Envoy client target_uri parameter
+	opts["discovery_address"] = config.DiscoveryAddress
 
 	if config.Tracing != nil {
 		switch tracer := config.Tracing.Tracer.(type) {

@@ -24,6 +24,8 @@ spec:
       - args:
         - proxy
         - sidecar
+        - --domain
+        - $(POD_NAMESPACE).svc.cluster.local
         - --configPath
         - /etc/istio/proxy
         - --binaryPath
@@ -48,6 +50,8 @@ spec:
         - "15020"
         - --applicationPorts
         - ""
+        - --concurrency
+        - "2"
         env:
         - name: POD_NAME
           valueFrom:
@@ -65,6 +69,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        - name: ISTIO_META_CONFIG_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: ISTIO_META_INTERCEPTION_MODE
           value: REDIRECT
         image: gcr.io/istio-release/proxyv2:master-latest-daily
@@ -82,8 +90,12 @@ spec:
           initialDelaySeconds: 1
           periodSeconds: 2
         resources:
+          limits:
+            cpu: "2"
+            memory: 128Mi
           requests:
-            cpu: 10m
+            cpu: 100m
+            memory: 128Mi
         securityContext:
           readOnlyRootFilesystem: true
           runAsUser: 1337
@@ -114,8 +126,8 @@ spec:
         name: istio-init
         resources:
           limits:
-            cpu: 10m
-            memory: 10Mi
+            cpu: 100m
+            memory: 50Mi
           requests:
             cpu: 10m
             memory: 10Mi
